@@ -70,34 +70,52 @@ def make_palette_from_names(class_names, fallback=LS_PALETTE):
     return pal
 
 
-def draw_legend(class_names, palette, max_h=None):
-    pad = 8
-    row_h = 22
+def draw_legend(class_names, palette, max_h=None, title="Legend"):
+    pad = 10
+    swatch = 24
+    row_h = max(swatch, 22)
     font = cv2.FONT_HERSHEY_SIMPLEX
-    fs = 0.55
-    thickness = 1
-    text_w = max([cv2.getTextSize(f"{i}: {n}", font, fs, thickness)[0][0] for i, n in enumerate(class_names, 1)] + [120])
-    w = 44 + 10 + text_w + pad * 2
-    h = pad*2 + row_h * len(class_names)
-    img = np.full((h, w, 3), 255, np.uint8)
-    y = pad
+    fs_title, fs_text = 0.7, 0.6
+    th = 1
+
+    entries = [f"{i}: {n}" for i, n in enumerate(class_names, 1)]
+    text_w = max([cv2.getTextSize(t, font, fs_text, th)[0][0] for t in entries] + [120])
+    title_w = cv2.getTextSize(title, font, fs_title, th)[0][0]
+
+    content_w = swatch + 12 + text_w
+    w = pad * 2 + max(content_w, title_w)
+    h_title = cv2.getTextSize(title, font, fs_title, th)[0][1] + 6
+    h = pad * 2 + h_title + len(class_names) * row_h
+
+    card = np.full((h, w, 3), 255, np.uint8)
+    cv2.rectangle(card, (0, 0), (w - 1, h - 1), (50, 50, 50), 1)
+
+    # title
+    cv2.putText(card, title, (pad, pad + h_title - 4), font, fs_title, (0, 0, 0), th, cv2.LINE_AA)
+    y = pad + h_title + 4
+
     for i, name in enumerate(class_names, 1):
-        color = palette[i-1]
-        cv2.rectangle(img, (pad, y), (pad+44, y+18), color, -1)
-        cv2.rectangle(img, (pad, y), (pad+44, y+18), (0,0,0), 1)
-        cv2.putText(img, f"{i}: {name}", (pad+54, y+15), font, fs, (0,0,0), thickness, cv2.LINE_AA)
+        color = palette[i - 1]
+        # color box
+        cv2.rectangle(card, (pad, y), (pad + swatch, y + swatch), color, -1)
+        cv2.rectangle(card, (pad, y), (pad + swatch, y + swatch), (0, 0, 0), 1)
+        # text
+        cv2.putText(card, f"{i}: {name}",
+                    (pad + swatch + 12, y + swatch - 6),
+                    font, fs_text, (0, 0, 0), th, cv2.LINE_AA)
         y += row_h
-    if (max_h is not None) and h != max_h:
-        scale = max_h / float(h)
-        new_w = max(1, int(round(w * scale)))
-        img = cv2.resize(img, (new_w, max_h), interpolation=cv2.INTER_AREA)
-    return img
+
+    if (max_h is not None) and (card.shape[0] != max_h):
+        scale = max_h / float(card.shape[0])
+        new_w = max(1, int(round(card.shape[1] * scale)))
+        card = cv2.resize(card, (new_w, max_h), interpolation=cv2.INTER_AREA)
+    return card
 
 
 def attach_legend_to_right(image_bgr, class_names, palette):
-    leg = draw_legend(class_names, palette, max_h=image_bgr.shape[0])
-    spacer = np.full((image_bgr.shape[0], 8, 3), 255, np.uint8)
-    return np.hstack([image_bgr, spacer, leg])
+    legend = draw_legend(class_names, palette, max_h=image_bgr.shape[0], title="Legend")
+    spacer = np.full((image_bgr.shape[0], 12, 3), 255, np.uint8)
+    return np.hstack([image_bgr, spacer, legend])
 
 
 def make_comparison_panel(bgr, pred_idx, gt_idx, class_names, palette, alpha=0.45):
@@ -146,7 +164,8 @@ def save_index_and_color_maps(acc_or_indices, class_names, out_mask_path, out_co
     """
     Сохраняет:
       - индексную маску PNG (0=фон, i=класс i)
-      - цветную карту PNG (+ легенда опц.)
+      - цветную карту PNG (в файл можно добавить легенду),
+    Возврат: (mask_idx, color_map_without_legend)
     """
     if acc_or_indices.ndim == 3:
         acc = acc_or_indices
@@ -164,29 +183,36 @@ def save_index_and_color_maps(acc_or_indices, class_names, out_mask_path, out_co
 
     if palette is None:
         palette = make_palette_from_names(class_names)
+
+    # color map WITHOUT legend
     bgr_map = np.zeros((H, W, 3), np.uint8)
     for i in range(1, len(class_names) + 1):
-        bgr = palette[i - 1]
-        bgr_map[cls_idx == i] = bgr
-    if add_legend:
-        bgr_map = attach_legend_to_right(bgr_map, class_names, palette)
-    cv2.imwrite(out_color_path, bgr_map)
+        bgr_map[cls_idx == i] = palette[i - 1]
+
+    # what we actually save to disk (optionally with legend)
+    bgr_to_save = attach_legend_to_right(bgr_map, class_names, palette) if add_legend else bgr_map
+    cv2.imwrite(out_color_path, bgr_to_save)
+
     return mask, bgr_map
 
 
 def save_overlay(bgr_src, bgr_map, out_path, alpha=0.45, blur=0, add_legend=False, class_names=None, palette=None):
+    # bgr_map должен быть БЕЗ легенды (ровно HxW)
     Hs, Ws = bgr_src.shape[:2]
-    Hm, Wm = bgr_map.shape[:2]
-    if (Hs, Ws) != (Hm, Wm):
+    if bgr_map.shape[:2] != (Hs, Ws):
         bgr_map_small = cv2.resize(bgr_map, (Ws, Hs), interpolation=cv2.INTER_NEAREST)
     else:
         bgr_map_small = bgr_map
-    vis = bgr_src.copy()
+
     if blur and blur >= 1:
         bgr_map_small = cv2.GaussianBlur(bgr_map_small, (0, 0), blur)
+
+    vis = bgr_src.copy()
     cv2.addWeighted(bgr_map_small, alpha, vis, 1 - alpha, 0, vis)
+
     if add_legend and class_names is not None and palette is not None:
         vis = attach_legend_to_right(vis, class_names, palette)
+
     cv2.imwrite(out_path, vis)
 
 
@@ -666,10 +692,13 @@ def clip_infer_on_dir(model, args, class_names):
         idx_path   = os.path.join(out_idx,   base + ".png")
         color_path = os.path.join(out_color, base + ".png")
         over_path  = os.path.join(out_over,  base + ".jpg")
-        _, color_map = save_index_and_color_maps(acc, class_names, idx_path, color_path,
-                                                 vis_thr=args.vis_thr, palette=palette, add_legend=True)
+        _, color_map = save_index_and_color_maps(
+            acc, class_names, idx_path, color_path,
+            vis_thr=args.vis_thr, palette=palette, add_legend=True  # в файл — с легендой
+        )
+
         save_overlay(src, color_map, over_path, alpha=args.vis_max_alpha, blur=args.vis_blur,
-                     add_legend=True, class_names=class_names, palette=palette)
+                    add_legend=True, class_names=class_names, palette=palette)
 
 
 def duplicate_positive_indices(index: TileIndex, indices, dup_factor: int):
@@ -955,8 +984,10 @@ def seg_evaluate(model, loader, num_classes_plus_bg: int, device,
                         out_color_path=color_path,
                         vis_thr=0.0, palette=palette, add_legend=True
                     )
+
+                    # финальный оверлей: карта без легенды, легенду рисуем тут
                     save_overlay(bgr, color_map, over_path, alpha=0.45, blur=0,
-                                 add_legend=True, class_names=class_names, palette=palette)
+                                add_legend=True, class_names=class_names, palette=palette)
 
                     panel = make_comparison_panel(bgr, pi, yi, class_names or [str(i) for i in range(1, num_classes_plus_bg)], palette)
                     cv2.imwrite(os.path.join(dump_dir, "panels", base + ".jpg"), panel)
@@ -1039,9 +1070,9 @@ def seg_infer_save(model, args, seg_index: SegIndex):
 
         cv2.imwrite(idx_path, pred)
         _, color_map = save_index_and_color_maps(pred, class_names, idx_path, color_path,
-                                                 vis_thr=0.0, palette=palette, add_legend=True)
+                                                vis_thr=0.0, palette=palette, add_legend=True)
         save_overlay(bgr, color_map, over_path, alpha=0.45, blur=0,
-                     add_legend=True, class_names=class_names, palette=palette)
+                    add_legend=True, class_names=class_names, palette=palette)
 
 
 def seg_duplicate_indices(indices, dup_factor: int):
@@ -1240,9 +1271,9 @@ def ovseg_infer_save(model, args, seg_index: SegIndex):
 
         cv2.imwrite(idx_path, pred)
         _, color_map = save_index_and_color_maps(pred, class_names, idx_path, color_path,
-                                                 vis_thr=0.0, palette=palette, add_legend=True)
+                                                vis_thr=0.0, palette=palette, add_legend=True)
         save_overlay(bgr, color_map, over_path, alpha=0.45, blur=0,
-                     add_legend=True, class_names=class_names, palette=palette)
+                    add_legend=True, class_names=class_names, palette=palette)
 
 
 def train(args):
