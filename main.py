@@ -1,15 +1,18 @@
 # main.py
-import os, json, math, argparse, random
+import os, json, math, argparse, random, sys
 import numpy as np
 import cv2
 from tqdm.auto import tqdm
+
+# ensure project root on sys.path
+sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from utils import (
+from utils.utils import (
     CLIP_MEAN, CLIP_STD, IMAGENET_MEAN, IMAGENET_STD,
     DEFAULT_CATEGORIES, LS_PALETTE,
     _norm_name, load_aliases_json, remap_id_to_canonical,
@@ -17,8 +20,8 @@ from utils import (
     infer_batch_clip, compute_pos_weight, evaluate_clip,
     make_cosine_kernel, save_index_and_color_maps, save_overlay, save_composite_overlay
 )
-from datasets import TileIndex, TilesDataset, SegIndex, SegDataset
-from models import CLIPHead, init_head_from_text, OvSegModel, get_seg_model
+from datasets.datasets import TileIndex, TilesDataset, SegIndex, SegDataset
+from model_zoo.models import CLIPHead, init_head_from_text, OvSegModel, get_seg_model
 
 torch.set_float32_matmul_precision('high')
 
@@ -82,16 +85,16 @@ def parse_args():
 
     if args.dump_aliases_template:
         template = {
-            "CRACK": ["CRACKS","FISSURE","裂缝"],
-            "SPALLING": ["SCALING","CONCRETE_SPALL"],
-            "DELAMINATION": ["DELAM","PEELING_PLASTER"],
-            "MISSING_ELEMENT": ["LOSS","MISSING_PIECE","MISSING_PART"],
-            "WATER_STAIN": ["DAMP_STAIN","MOISTURE_STAIN"],
-            "EFFLORESCENCE": ["SALT","WHITE_SALT","SALT_STAIN"],
-            "CORROSION": ["RUST","RUST_STAIN"],
-            "ORNAMENT_INTACT": ["INTACT","GOOD_ORNAMENT"],
-            "REPAIRS": ["AFTER_REPAIR"],
-            "TEXT_OR_IMAGES":["GRAFFITTI"]
+            "CRACK": ["CRACKS", "FISSURE", "裂缝", "FRACTURE", "CRACK_LINE"],
+            "SPALLING": ["SCALING", "CONCRETE_SPALL", "EXFOLIATION", "SURFACE_SPALL"],
+            "DELAMINATION": ["DELAM", "PEELING_PLASTER", "LAYER_SEPARATION"],
+            "MISSING_ELEMENT": ["LOSS", "MISSING_PIECE", "MISSING_PART", "CHIPPING", "BROKEN_PIECE"],
+            "WATER_STAIN": ["DAMP_STAIN", "MOISTURE_STAIN", "WET_MARK", "WATERMARK"],
+            "EFFLORESCENCE": ["SALT", "WHITE_SALT", "SALT_STAIN", "SALTPETER", "BLOOM"],
+            "CORROSION": ["RUST", "RUST_STAIN", "OXIDATION", "CORRODED"],
+            "ORNAMENT_INTACT": ["INTACT", "GOOD_ORNAMENT", "UNDAMAGED"],
+            "REPAIRS": ["AFTER_REPAIR", "PATCH", "REPAIR_PATCH", "PLASTER_PATCH", "MORTAR_PATCH", "REPAIRED_AREA"],
+            "TEXT_OR_IMAGES": ["GRAFFITI", "GRAFFITTI", "STICKER", "STICKERS", "POSTER", "FLYER", "DECAL", "AD", "PAINTED_TEXT", "NUMBERING", "TAG"]
         }
         with open(args.dump_aliases_template, "w", encoding="utf-8") as f:
             json.dump(template, f, ensure_ascii=False, indent=2)
@@ -100,7 +103,7 @@ def parse_args():
 
     return args
 
-# ---------- train ----------
+# ---------- helpers ----------
 def duplicate_positive_indices(index: TileIndex, indices, dup_factor: int):
     if dup_factor <= 1:
         return indices
@@ -113,6 +116,7 @@ def duplicate_positive_indices(index: TileIndex, indices, dup_factor: int):
             out.append(i)
     return out
 
+# ---------- train loops ----------
 def clip_train(args, device):
     index = TileIndex(args.images_dir, args.coco_json,
                       tile_size=args.tile_size, stride=args.stride,
@@ -176,13 +180,11 @@ def seg_train(args, device):
     total, trainable = count_params(model)
     print(f"[i] Segmentation model params: total={format_int(total)}, trainable={format_int(trainable)}")
 
-    criterion = nn.CrossEntropyLoss(ignore_index=255)  # mask in 0..C (bg=0) — ок
+    criterion = nn.CrossEntropyLoss(ignore_index=255)
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=3e-4, weight_decay=1e-4)
 
-    best = 0.0
     for ep in range(1, args.epochs+1):
-        model.train()
-        losses = []
+        model.train(); losses = []
         for x, m, _ in tqdm(dl_tr, desc=f"Seg Train {ep}/{args.epochs}", leave=False):
             x = x.to(device); m = m.to(device)
             out = model(x)["out"]
@@ -190,7 +192,6 @@ def seg_train(args, device):
             opt.zero_grad(); loss.backward(); opt.step()
             losses.append(float(loss.item()))
         print(f"[i] ep{ep} loss={np.mean(losses):.4f}")
-        # (здесь можно воткнуть простую валидацию IoU, опускаю ради компактности)
         torch.save({"state_dict": model.state_dict()}, os.path.join(out_dir, "checkpoints", f"seg_ep{ep:03d}.pt"))
 
 def ovseg_train(args, device):
@@ -219,12 +220,10 @@ def ovseg_train(args, device):
             {"params": bb_params,  "lr": args.ovseg_lr_backbone, "weight_decay": 0.0},
         ]
     )
-    criterion = nn.CrossEntropyLoss(ignore_index=255)  # mask: 0..C
+    criterion = nn.CrossEntropyLoss(ignore_index=255)
 
-    best = 0.0
     for ep in range(1, args.epochs+1):
-        model.train()
-        losses = []
+        model.train(); losses = []
         for x, m, _ in tqdm(dl_tr, desc=f"OVSeg Train {ep}/{args.epochs}", leave=False):
             x = x.to(device); m = m.to(device)
             out = model(x)["out"]
@@ -256,10 +255,8 @@ def clip_infer_on_dir(args, device):
     out_comp  = os.path.join(args.out_dir, "clip_comp");  os.makedirs(out_comp, exist_ok=True)
 
     class_names = index.classes
-    palette = LS_PALETTE
     kernel_full = make_cosine_kernel(args.tile_size)
 
-    # iterate all images in test_dir (or images_dir if test_dir empty)
     test_dir = args.test_dir if args.test_dir else args.images_dir
     img_paths = []
     for root, _, files in os.walk(test_dir):
@@ -270,8 +267,8 @@ def clip_infer_on_dir(args, device):
 
     for path in tqdm(img_paths, desc="CLIP infer"):
         src = cv2.imread(path, cv2.IMREAD_COLOR)
-        if src is None: 
-            print(f"[!] cannot read {path}"); 
+        if src is None:
+            print(f"[!] cannot read {path}")
             continue
         src = cv2.cvtColor(src, cv2.COLOR_BGR2RGB)
         H, W = src.shape[:2]
@@ -304,9 +301,12 @@ def clip_infer_on_dir(args, device):
         cnt[cnt == 0] = 1.0
         acc /= cnt[None, :, :]
 
-        save_composite_overlay(src, acc, class_names,
-                               os.path.join(out_comp, os.path.basename(path)),
-                               palette=LS_PALETTE, vis_thr=args.vis_thr, alpha=args.vis_max_alpha, blur=args.vis_blur)
+        save_composite_overlay(
+            src, acc, class_names,
+            os.path.join(out_comp, os.path.basename(path)),
+            palette=LS_PALETTE, vis_thr=args.vis_thr, alpha=args.vis_max_alpha, blur=args.vis_blur,
+            add_legend=args.vis_legend
+        )
 
         base = os.path.splitext(os.path.basename(path))[0]
         idx_path   = os.path.join(out_idx,   base + ".png")
@@ -319,7 +319,6 @@ def clip_infer_on_dir(args, device):
 
 def seg_infer(args, device, use_ovseg=False):
     assert args.ckpt, "--ckpt is required for seg_infer/ovseg_infer"
-    # index only to know classes/palette and to reuse transforms if нужно
     seg_index = SegIndex(args.images_dir if args.images_dir else args.test_dir,
                          args.coco_json, class_aliases=args.class_aliases)
 
@@ -356,7 +355,6 @@ def seg_infer(args, device, use_ovseg=False):
         src = cv2.cvtColor(src, cv2.COLOR_BGR2RGB)
         H, W = src.shape[:2]
 
-        # single pass resize to seg_img_size (простая и быстрая версия)
         long_side = max(H, W)
         scale = args.seg_img_size / long_side
         newH, newW = int(round(H*scale)), int(round(W*scale))
@@ -377,17 +375,15 @@ def seg_infer(args, device, use_ovseg=False):
             out = model(x)["out"]
             logits = F.interpolate(out, size=(newH, newW), mode="bilinear", align_corners=False)
             pred = logits.argmax(1)[0].detach().cpu().numpy()  # 0..C
-        # paste back
+
         full = np.zeros((H, W), np.uint8)
         full[:newH, :newW] = pred
 
-        # save
         base = os.path.splitext(os.path.basename(path))[0]
         idx_path   = os.path.join(out_idx,   base + ".png")
         color_path = os.path.join(out_color, base + ".png")
         over_path  = os.path.join(out_over,  base + ".jpg")
 
-        # make acc from labels for colorization convenience
         C = seg_index.num_classes
         acc = np.zeros((C, H, W), np.float32)
         for c in range(1, C+1):

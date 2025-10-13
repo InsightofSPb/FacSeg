@@ -1,3 +1,9 @@
 datasets/*
 *.png
 results/*
+
+/datasets/*
+!/datasets/*.py
+!/datasets/__init__.py
+!/datasets/*.md
+!/datasets/aliases.json

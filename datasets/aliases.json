@@ -1,0 +1,72 @@
+{
+  "CRACK": [
+    "CRACKS",
+    "FISSURE",
+    "裂缝",
+    "FRACTURE",
+    "CRACK_LINE"
+  ],
+  "SPALLING": [
+    "SCALING",
+    "CONCRETE_SPALL",
+    "EXFOLIATION",
+    "SURFACE_SPALL"
+  ],
+  "DELAMINATION": [
+    "DELAM",
+    "PEELING_PLASTER",
+    "LAYER_SEPARATION"
+  ],
+  "MISSING_ELEMENT": [
+    "LOSS",
+    "MISSING_PIECE",
+    "MISSING_PART",
+    "CHIPPING",
+    "BROKEN_PIECE"
+  ],
+  "WATER_STAIN": [
+    "DAMP_STAIN",
+    "MOISTURE_STAIN",
+    "WET_MARK",
+    "WATERMARK"
+  ],
+  "EFFLORESCENCE": [
+    "SALT",
+    "WHITE_SALT",
+    "SALT_STAIN",
+    "SALTPETER",
+    "BLOOM"
+  ],
+  "CORROSION": [
+    "RUST",
+    "RUST_STAIN",
+    "OXIDATION",
+    "CORRODED"
+  ],
+  "ORNAMENT_INTACT": [
+    "INTACT",
+    "GOOD_ORNAMENT",
+    "UNDAMAGED"
+  ],
+  "REPAIRS": [
+    "AFTER_REPAIR",
+    "PATCH",
+    "REPAIR_PATCH",
+    "PLASTER_PATCH",
+    "MORTAR_PATCH",
+    "REPAIRED_AREA"
+  ],
+  "TEXT_OR_IMAGES": [
+    "GRAFFITI",
+    "GRAFFITTI",
+    "STICKER",
+    "STICKERS",
+    "POSTER",
+    "FLYER",
+    "DECAL",
+    "AD",
+    "PAINTED_TEXT",
+    "NUMBERING",
+    "TAG"
+  ]
+}

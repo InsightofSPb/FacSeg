@@ -60,11 +60,11 @@ def init_head_from_text(head_module, class_names, model_name="ViT-B-32-quickgelu
                 nn.init.zeros_(m.bias)
                 break
 
+# ---------- OVSeg (CLIP-ViT + light decoder) ----------
 def _clip_spatial_tokens(visual, x):
-    # lifted from open_clip ViT forward; converts to [B,C,H',W'] feature map
     B = x.shape[0]
-    x = visual.conv1(x)  # [B, C, H/patch, W/patch]
-    x = x.reshape(B, visual.conv1.out_channels, -1).permute(0, 2, 1)  # [B, N, C]
+    x = visual.conv1(x)
+    x = x.reshape(B, visual.conv1.out_channels, -1).permute(0, 2, 1)
     class_token = visual.class_embedding.to(x.dtype)
     class_token = class_token.expand(B, 1, -1)
     x = torch.cat([class_token, x], dim=1)
@@ -98,14 +98,14 @@ class OvSegDecoder(nn.Module):
 
     def forward(self, feat_map, out_hw):
         x = self.proj(feat_map)
-        x = F.interpolate(x, size=out_hw, mode="bilinear", align_corners=False)
+        x = torch.nn.functional.interpolate(x, size=out_hw, mode="bilinear", align_corners=False)
         x = self.block(x)
         logits = self.head(x)
         return logits
 
 class OvSegModel(nn.Module):
     """
-    CLIP-ViT backbone (open_clip) + лёгкий декодер -> dict(out=логиты) как у torchvision.
+    CLIP-ViT backbone (open_clip) + лёгкий декодер -> dict(out=логиты).
     Выход: C+1 каналов (фон+классы)
     """
     def __init__(self, model_name, pretrained, n_classes, freeze_backbone=False,
@@ -117,20 +117,21 @@ class OvSegModel(nn.Module):
             for p in self.visual.parameters():
                 p.requires_grad = False
         in_dim = getattr(self.visual, "width", None)
-        if in_dim is None:  # fallback
+        if in_dim is None:
             in_dim = int(self.visual.ln_post.normalized_shape[0])
         self.decoder = OvSegDecoder(in_dim, n_classes + 1, decoder_channels, dropout=decoder_dropout)
 
     def forward(self, x):
-        feat = _clip_spatial_tokens(self.visual, x)                   # [B, C, H', W']
-        logits = self.decoder(feat, out_hw=(x.shape[-2], x.shape[-1]))  # [B, C+1, H, W]
+        feat = _clip_spatial_tokens(self.visual, x)
+        logits = self.decoder(feat, out_hw=(x.shape[-2], x.shape[-1]))
         return {"out": logits}
 
+# ---------- torchvision baseline ----------
 def get_seg_model(name: str, num_classes: int, weights_tag="imagenet"):
     name = name.lower()
     if name in ["deeplab", "deeplabv3_resnet50", "deeplabv3"]:
         m = tvm.segmentation.deeplabv3_resnet50(weights="DEFAULT" if weights_tag else None)
-        m.classifier[4] = nn.Conv2d(256, num_classes + 1, 1)  # bg+classes
+        m.classifier[4] = nn.Conv2d(256, num_classes + 1, 1)
         return m
     elif name in ["fcn", "fcn_resnet50", "fcn50"]:
         m = tvm.segmentation.fcn_resnet50(weights="DEFAULT" if weights_tag else None)

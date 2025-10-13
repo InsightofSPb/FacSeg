@@ -8,7 +8,9 @@ import cv2
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from sklearn.metrics import average_precision_score, roc_auc_score
 
+# ---------- stats & palettes ----------
 CLIP_MEAN = [0.48145466, 0.4578275, 0.40821073]
 CLIP_STD  = [0.26862954, 0.26130258, 0.27577711]
 
@@ -25,7 +27,7 @@ DEFAULT_CATEGORIES = {
     7: "CORROSION",
     8: "ORNAMENT_INTACT",
     9: "REPAIRS",
-    10: "TEXT_OR_IMAGES"
+    10: "TEXT_OR_IMAGES",
 }
 
 LS_PALETTE = {
@@ -37,8 +39,8 @@ LS_PALETTE = {
     "EFFLORESCENCE": "#FDD835",
     "CORROSION": "#00ACC1",
     "ORNAMENT_INTACT": "#9E9E9E",
-    "REPAIRS":"#4E9E9E",
-    "TEXT_OR_IMAGES":"#8E7E47"
+    "REPAIRS": "#4E9E9E",
+    "TEXT_OR_IMAGES": "#8E7E47",
 }
 
 # ---------- name utils / aliases ----------
@@ -46,7 +48,7 @@ def _norm_name(s: str) -> str:
     return s.strip().upper().replace(" ", "_")
 
 def load_aliases_json(path: str):
-    if not path or not os.path.isfile(path): 
+    if not path or not os.path.isfile(path):
         return {}
     with open(path, "r", encoding="utf-8") as f:
         raw = json.load(f)
@@ -65,20 +67,17 @@ def remap_id_to_canonical(id_to_name: dict, aliases: dict, fallback=DEFAULT_CATE
     present = [n for n in canon_order if n in set(mapped.values())]
     return mapped, present
 
+# ---------- misc ----------
 def hex_to_bgr(hex_str: str):
     h = hex_str.lstrip("#")
-    r = int(h[0:2], 16)
-    g = int(h[2:4], 16)
-    b = int(h[4:6], 16)
+    r = int(h[0:2], 16); g = int(h[2:4], 16); b = int(h[4:6], 16)
     return (b, g, r)
 
 def safe_path(images_dir, file_name):
     p = file_name
     if not os.path.isabs(p):
         p = os.path.join(images_dir, file_name)
-    if os.path.isfile(p):
-        return p
-    return None
+    return p if os.path.isfile(p) else None
 
 def polygons_to_mask(segmentation, H, W, value=1):
     mask = np.zeros((H, W), np.uint8)
@@ -90,11 +89,9 @@ def polygons_to_mask(segmentation, H, W, value=1):
     return mask
 
 def format_int(n: int) -> str:
-    s = str(n)
-    out = []
+    s = str(n); out = []
     while s:
-        out.append(s[-3:])
-        s = s[:-3]
+        out.append(s[-3:]); s = s[:-3]
     return " ".join(reversed(out))
 
 def count_params(model):
@@ -133,11 +130,9 @@ def compute_pos_weight(dl_tr, n_classes):
     pos = torch.zeros(n_classes, dtype=torch.float32)
     cnt = 0
     for _, y, _ in dl_tr:
-        pos += y.sum(dim=0)
-        cnt += y.shape[0]
-    pos = torch.clamp(pos, min=1.0)  # avoid zero
-    neg = cnt - pos
-    neg = torch.clamp(neg, min=1.0)
+        pos += y.sum(dim=0); cnt += y.shape[0]
+    pos = torch.clamp(pos, min=1.0)
+    neg = torch.clamp(cnt - pos, min=1.0)
     return neg / pos
 
 def evaluate_clip(model, dl, device, n_classes, progress_desc="CLIP Val"):
@@ -150,22 +145,17 @@ def evaluate_clip(model, dl, device, n_classes, progress_desc="CLIP Val"):
             prob = torch.sigmoid(logits)
         ys.append(y.detach().cpu().numpy())
         ps.append(prob.detach().cpu().numpy())
-    Y = np.concatenate(ys, 0)
-    P = np.concatenate(ps, 0)
-    ap = []
-    auc = []
+    Y = np.concatenate(ys, 0); P = np.concatenate(ps, 0)
+    ap, auc = [], []
     for c in range(n_classes):
-        try:
-            ap.append(float(average_precision_score(Y[:, c], P[:, c])))
-        except Exception:
-            ap.append(float("nan"))
-        try:
-            auc.append(float(roc_auc_score(Y[:, c], P[:, c])))
-        except Exception:
-            auc.append(float("nan"))
+        try: ap.append(float(average_precision_score(Y[:, c], P[:, c])))
+        except Exception: ap.append(float("nan"))
+        try: auc.append(float(roc_auc_score(Y[:, c], P[:, c])))
+        except Exception: auc.append(float("nan"))
     macro = {"ap": np.nanmean(ap), "auc": np.nanmean(auc)}
     return P, macro, ap, auc
 
+# ---------- kernels & viz ----------
 def make_cosine_kernel(ts: int):
     wx = 0.5 * (1 - np.cos(2 * np.pi * (np.arange(ts) + 0.5) / ts))
     wy = wx.copy()
@@ -205,7 +195,9 @@ def save_overlay(src_rgb, color_map, out_path, alpha=0.6, blur=0, add_legend=Fal
         _draw_legend(over, class_names, palette)
     cv2.imwrite(out_path, cv2.cvtColor(over, cv2.COLOR_RGB2BGR))
 
-def save_composite_overlay(src_rgb, acc_C_hw, class_names, out_path, palette=LS_PALETTE, vis_thr=0.5, alpha=0.6, blur=0):
+def save_composite_overlay(src_rgb, acc_C_hw, class_names, out_path,
+                           palette=LS_PALETTE, vis_thr=0.5, alpha=0.6, blur=0,
+                           add_legend=False):
     C, H, W = acc_C_hw.shape
     idx = acc_C_hw.argmax(0).astype(np.uint8)
     conf = acc_C_hw.max(0)
@@ -213,4 +205,5 @@ def save_composite_overlay(src_rgb, acc_C_hw, class_names, out_path, palette=LS_
     for c, name in enumerate(class_names):
         m = (idx == c) & (conf >= vis_thr)
         color[m] = hex_to_bgr(palette.get(name, "#FF00FF"))
-    save_overlay(src_rgb, color, out_path, alpha=alpha, blur=blur, add_legend=True, class_names=class_names, palette=palette)
+    save_overlay(src_rgb, color, out_path, alpha=alpha, blur=blur,
+                 add_legend=add_legend, class_names=class_names, palette=palette)
