@@ -198,7 +198,12 @@ def ovseg_train(args, device):
     out_dir = stamp_out_dir(args.out_dir)
     print(f"[i] results will be saved to: {out_dir}")
     seg_index = SegIndex(args.images_dir, args.coco_json, class_aliases=args.class_aliases)
-    tr_idx, va_idx = seg_index.split_by_images(val_ratio=args.val_ratio, seed=42)
+
+    tr_idx_orig, va_idx = seg_index.split_by_images(val_ratio=args.val_ratio, seed=42)
+    tr_idx = []
+    for _ in range(max(1, args.seg_dup)):
+        tr_idx += tr_idx_orig
+    print(f"[i] seg train images: {len(tr_idx_orig)} (dup x{args.seg_dup} -> {len(tr_idx)}) | val images: {len(va_idx)}")
 
     ds_tr = SegDataset(seg_index, tr_idx, train=True,  size=args.seg_img_size, norm_mode="clip")
     ds_va = SegDataset(seg_index, va_idx, train=False, size=args.seg_img_size, norm_mode="clip")
@@ -278,23 +283,25 @@ def clip_infer_on_dir(args, device):
         batch_tiles, coords = [], []
         for yy in range(0, max(1, H - args.tile_size + 1), args.stride):
             for xx in range(0, max(1, W - args.tile_size + 1), args.stride):
-                tile = src[yy:yy+args.tile_size, xx:xx+args.tile_size]
-                tile = cv2.resize(tile, (args.img_size, args.img_size), interpolation=cv2.INTER_AREA)
+                raw = src[yy:yy+args.tile_size, xx:xx+args.tile_size]   # может быть "урезанным"
+                hh, ww = raw.shape[:2]
+                # для модели всё равно приводим к img_size
+                tile = cv2.resize(raw, (args.img_size, args.img_size), interpolation=cv2.INTER_AREA)
                 tile = (tile.astype(np.float32)/255.0 - np.array(CLIP_MEAN)[None,None,:]) / np.array(CLIP_STD)[None,None,:]
                 tile = torch.from_numpy(tile.transpose(2,0,1)).float()
-                batch_tiles.append(tile); coords.append((xx, yy, args.tile_size, args.tile_size))
+                batch_tiles.append(tile); coords.append((xx, yy, ww, hh))
                 if len(batch_tiles) >= args.batch_size:
                     probs = infer_batch_clip(model, batch_tiles, device)
-                    k = kernel_full
-                    for p, (xx2, yy2, ww, hh) in zip(probs, coords):
-                        acc[:, yy2:yy2+hh, xx2:xx2+ww] += p[:, None, None] * k
-                        cnt[yy2:yy2+hh, xx2:xx2+ww] += k
+                    for p, (xx2, yy2, ww2, hh2) in zip(probs, coords):
+                        k = kernel_full[:hh2, :ww2]                    
+                        acc[:, yy2:yy2+hh2, xx2:xx2+ww2] += p[:, None, None] * k
+                        cnt[yy2:yy2+hh2, xx2:xx2+ww2] += k
                     batch_tiles, coords = [], []
 
         if batch_tiles:
             probs = infer_batch_clip(model, batch_tiles, device)
-            k = kernel_full
             for p, (xx2, yy2, ww, hh) in zip(probs, coords):
+                k = kernel_full[:hh, :ww]
                 acc[:, yy2:yy2+hh, xx2:xx2+ww] += p[:, None, None] * k
                 cnt[yy2:yy2+hh, xx2:xx2+ww] += k
 

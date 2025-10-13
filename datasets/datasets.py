@@ -67,16 +67,19 @@ class TileIndex:
                 if isinstance(seg, list) and seg and isinstance(seg[0], list):
                     class_masks[cid] |= polygons_to_mask(seg, H, W, 1)
 
-            for y in range(0, max(1, H - self.tile_size + 1), self.stride):
-                for x in range(0, max(1, W - self.tile_size + 1), self.stride):
-                    tile_area = float(self.tile_size * self.tile_size)
-                    labels = np.zeros(self.C, np.float32)
-                    for j, cid in enumerate(self.class_ids):
-                        inter = class_masks[cid][y:y + self.tile_size, x:x + self.tile_size].sum()
-                        if inter / tile_area >= cover_thr:
-                            labels[j] = 1.0
-                    if keep_empty or labels.sum() > 0:
-                        self.records.append((im["id"], path, x, y, self.tile_size, labels))
+                for y in range(0, max(1, H - self.tile_size + 1), self.stride):
+                    for x in range(0, max(1, W - self.tile_size + 1), self.stride):
+                        tile_h = min(self.tile_size, H - y)
+                        tile_w = min(self.tile_size, W - x)
+                        tile_area = float(tile_h * tile_w)
+                        labels = np.zeros(self.C, np.float32)
+                        y2, x2 = y + tile_h, x + tile_w
+                        for j, cid in enumerate(self.class_ids):
+                            inter = class_masks[cid][y:y2, x:x2].sum()
+                            if inter / tile_area >= cover_thr:
+                                labels[j] = 1.0
+                        if keep_empty or labels.sum() > 0:
+                            self.records.append((im["id"], path, x, y, min(self.tile_size, tile_w), labels))
 
         self.image_ids = sorted({r[0] for r in self.records})
 
@@ -168,7 +171,7 @@ class SegIndex:
                 continue
             path = safe_path(images_dir, im["file_name"])
             if path is None:
-                print(f("[!] Missing image file: {im['file_name']}"))
+                print(f"[!] Missing image file: {im['file_name']}")
                 continue
             H, W = im["height"], im["width"]
 
