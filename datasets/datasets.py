@@ -21,19 +21,36 @@ def _resolve_coco_classes(coco: dict, aliases_tbl=None):
     """Return canonical class order and mapping from COCO ids -> canonical names."""
     aliases_tbl = aliases_tbl or {}
 
-    id_to_name = {c["id"]: c.get("name", f"cat_{c['id']}") for c in coco.get("categories", [])}
-    id_to_norm, present_names = remap_id_to_canonical(id_to_name, aliases_tbl, fallback=DEFAULT_CATEGORIES)
+    categories = coco.get("categories", []) or []
+    id_to_name = {c["id"]: c.get("name", f"cat_{c['id']}") for c in categories}
+
     norm2canon = {_norm_name(v): v for v in DEFAULT_CATEGORIES.values()}
 
+    observed = []  # (cid, canonical_name)
     coco_id_to_canon = {}
-    for cid, nrm in id_to_norm.items():
-        if nrm in present_names and nrm in norm2canon:
-            coco_id_to_canon[cid] = norm2canon[nrm]
 
-    canon_order = [
-        DEFAULT_CATEGORIES[k] for k in sorted(DEFAULT_CATEGORIES.keys())
-        if DEFAULT_CATEGORIES[k] in coco_id_to_canon.values()
-    ]
+    for cid, raw_name in id_to_name.items():
+        norm = _norm_name(raw_name)
+        if norm in aliases_tbl:
+            canon_norm = aliases_tbl[norm]
+            canon = norm2canon.get(canon_norm, canon_norm)
+        elif norm in norm2canon:
+            canon = norm2canon[norm]
+        else:
+            canon = raw_name.strip() or f"cat_{cid}"
+        coco_id_to_canon[cid] = canon
+        observed.append((cid, canon))
+
+    canon_order = []
+    present = {name for _, name in observed}
+    for key in sorted(DEFAULT_CATEGORIES.keys()):
+        nm = DEFAULT_CATEGORIES[key]
+        if nm in present and nm not in canon_order:
+            canon_order.append(nm)
+    for _, name in observed:
+        if name not in canon_order:
+            canon_order.append(name)
+
     return canon_order, coco_id_to_canon
 
 
