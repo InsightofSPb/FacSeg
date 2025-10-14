@@ -108,8 +108,6 @@ class TileIndex:
         for im in tqdm(self.images, desc="Index tiles", unit="img"):
             path = _resolve_image_path(images_dir, im)
             if path is None:
-                miss = im.get("file_name") or im.get("path") or str(im.get("id"))
-                print(f"[!] Missing image file: {miss}")
                 continue
 
             H, W = int(im["height"]), int(im["width"])
@@ -243,8 +241,6 @@ class SegIndex:
             H, W = int(im["height"]), int(im["width"])
             path = _resolve_image_path(images_dir, im)
             if path is None:
-                miss = im.get("file_name") or im.get("path") or str(im.get("id"))
-                print(f"[!] Missing image file: {miss}")
                 continue
 
             mask = np.zeros((H, W), np.uint8)
@@ -280,7 +276,7 @@ class SegIndex:
 
 # ----------------------------- Dataset wrapper -----------------------------
 
-def _build_tf(train: bool, size: int, norm_mode: str):
+def _build_tf(train: bool, size: int, norm_mode: str, include_normalize: bool = True):
     if train:
         aug = [
             A.LongestMaxSize(max_size=size),
@@ -294,17 +290,18 @@ def _build_tf(train: bool, size: int, norm_mode: str):
             A.LongestMaxSize(max_size=size),
             A.PadIfNeeded(min_height=size, min_width=size, border_mode=cv2.BORDER_CONSTANT),  # без value
         ]
-    if norm_mode == "clip":
-        aug.append(A.Normalize(mean=CLIP_MEAN, std=CLIP_STD, max_pixel_value=255.0))
-    else:
-        aug.append(A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD, max_pixel_value=255.0))
+    if include_normalize:
+        if norm_mode == "clip":
+            aug.append(A.Normalize(mean=CLIP_MEAN, std=CLIP_STD, max_pixel_value=255.0))
+        else:
+            aug.append(A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD, max_pixel_value=255.0))
     return A.Compose(aug)
 
 class SegDataset(Dataset):
     def __init__(self, seg_index: SegIndex, idxs, train: bool, size: int, norm_mode: str = "clip"):
         self.si = seg_index
         self.idxs = list(idxs)
-        self.tf = _build_tf(train, size, norm_mode)
+        self.tf = _build_tf(train, size, norm_mode, include_normalize=True)
         self.to_tensor = ToTensorV2(transpose_mask=False)
 
     def __len__(self):

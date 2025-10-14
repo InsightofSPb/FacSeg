@@ -190,7 +190,9 @@ def save_overlay(src_rgb, color_map, out_path, alpha=0.6, blur=0, add_legend=Fal
     if blur and blur > 0:
         k = max(1, int(blur)) | 1
         base = cv2.GaussianBlur(base, (k, k), 0)
-    over = (alpha * base + (1 - alpha) * src_rgb).astype(np.uint8)
+    if base.ndim == 3 and base.shape[2] == 3:
+        base = cv2.cvtColor(base, cv2.COLOR_BGR2RGB)
+    over = (alpha * base.astype(np.float32) + (1 - alpha) * src_rgb.astype(np.float32)).astype(np.uint8)
     if add_legend and class_names:
         _draw_legend(over, class_names, palette)
     cv2.imwrite(out_path, cv2.cvtColor(over, cv2.COLOR_RGB2BGR))
