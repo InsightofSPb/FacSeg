@@ -1,0 +1,1322 @@
+{
+  "classes": [
+    "CRACK",
+    "SPALLING",
+    "DELAMINATION",
+    "MISSING_ELEMENT",
+    "WATER_STAIN",
+    "EFFLORESCENCE",
+    "ORNAMENT_INTACT",
+    "REPAIRS",
+    "TEXT_OR_IMAGES"
+  ],
+  "items": [
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5486.jpg",
+      "group_key": "IMG_5486__00000",
+      "source_index": 0,
+      "crop_index": 0,
+      "crop_bbox": [
+        1824,
+        1320,
+        2208,
+        1704
+      ],
+      "crop_size": [
+        384,
+        384
+      ],
+      "image": "images/0000000_IMG_5486_c00_s384.png",
+      "mask": "masks/0000000_IMG_5486_c00_s384.png",
+      "combo": "combo/0000000_IMG_5486_c00_s384.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5486.jpg",
+      "group_key": "IMG_5486__00000",
+      "source_index": 0,
+      "crop_index": 1,
+      "crop_bbox": [
+        1802,
+        1298,
+        2229,
+        1725
+      ],
+      "crop_size": [
+        427,
+        427
+      ],
+      "image": "images/0000001_IMG_5486_c01_s427.png",
+      "mask": "masks/0000001_IMG_5486_c01_s427.png",
+      "combo": "combo/0000001_IMG_5486_c01_s427.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5486.jpg",
+      "group_key": "IMG_5486__00000",
+      "source_index": 0,
+      "crop_index": 2,
+      "crop_bbox": [
+        1781,
+        1277,
+        2250,
+        1746
+      ],
+      "crop_size": [
+        469,
+        469
+      ],
+      "image": "images/0000002_IMG_5486_c02_s469.png",
+      "mask": "masks/0000002_IMG_5486_c02_s469.png",
+      "combo": "combo/0000002_IMG_5486_c02_s469.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5486.jpg",
+      "group_key": "IMG_5486__00000",
+      "source_index": 0,
+      "crop_index": 3,
+      "crop_bbox": [
+        1760,
+        1256,
+        2272,
+        1768
+      ],
+      "crop_size": [
+        512,
+        512
+      ],
+      "image": "images/0000003_IMG_5486_c03_s512.png",
+      "mask": "masks/0000003_IMG_5486_c03_s512.png",
+      "combo": "combo/0000003_IMG_5486_c03_s512.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5486.jpg",
+      "group_key": "IMG_5486__00000",
+      "source_index": 0,
+      "crop_index": 4,
+      "crop_bbox": [
+        1738,
+        1234,
+        2293,
+        1789
+      ],
+      "crop_size": [
+        555,
+        555
+      ],
+      "image": "images/0000004_IMG_5486_c04_s555.png",
+      "mask": "masks/0000004_IMG_5486_c04_s555.png",
+      "combo": "combo/0000004_IMG_5486_c04_s555.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5486.jpg",
+      "group_key": "IMG_5486__00000",
+      "source_index": 0,
+      "crop_index": 5,
+      "crop_bbox": [
+        1717,
+        1213,
+        2314,
+        1810
+      ],
+      "crop_size": [
+        597,
+        597
+      ],
+      "image": "images/0000005_IMG_5486_c05_s597.png",
+      "mask": "masks/0000005_IMG_5486_c05_s597.png",
+      "combo": "combo/0000005_IMG_5486_c05_s597.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5486.jpg",
+      "group_key": "IMG_5486__00000",
+      "source_index": 0,
+      "crop_index": 6,
+      "crop_bbox": [
+        1696,
+        1192,
+        2336,
+        1832
+      ],
+      "crop_size": [
+        640,
+        640
+      ],
+      "image": "images/0000006_IMG_5486_c06_s640.png",
+      "mask": "masks/0000006_IMG_5486_c06_s640.png",
+      "combo": "combo/0000006_IMG_5486_c06_s640.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5486.jpg",
+      "group_key": "IMG_5486__00000",
+      "source_index": 0,
+      "crop_index": 7,
+      "crop_bbox": [
+        1674,
+        1170,
+        2357,
+        1853
+      ],
+      "crop_size": [
+        683,
+        683
+      ],
+      "image": "images/0000007_IMG_5486_c07_s683.png",
+      "mask": "masks/0000007_IMG_5486_c07_s683.png",
+      "combo": "combo/0000007_IMG_5486_c07_s683.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5486.jpg",
+      "group_key": "IMG_5486__00000",
+      "source_index": 0,
+      "crop_index": 8,
+      "crop_bbox": [
+        1653,
+        1149,
+        2378,
+        1874
+      ],
+      "crop_size": [
+        725,
+        725
+      ],
+      "image": "images/0000008_IMG_5486_c08_s725.png",
+      "mask": "masks/0000008_IMG_5486_c08_s725.png",
+      "combo": "combo/0000008_IMG_5486_c08_s725.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5486.jpg",
+      "group_key": "IMG_5486__00000",
+      "source_index": 0,
+      "crop_index": 9,
+      "crop_bbox": [
+        1632,
+        1128,
+        2400,
+        1896
+      ],
+      "crop_size": [
+        768,
+        768
+      ],
+      "image": "images/0000009_IMG_5486_c09_s768.png",
+      "mask": "masks/0000009_IMG_5486_c09_s768.png",
+      "combo": "combo/0000009_IMG_5486_c09_s768.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5487.jpg",
+      "group_key": "IMG_5487__00001",
+      "source_index": 1,
+      "crop_index": 0,
+      "crop_bbox": [
+        1320,
+        1824,
+        1704,
+        2208
+      ],
+      "crop_size": [
+        384,
+        384
+      ],
+      "image": "images/0000010_IMG_5487_c00_s384.png",
+      "mask": "masks/0000010_IMG_5487_c00_s384.png",
+      "combo": "combo/0000010_IMG_5487_c00_s384.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5487.jpg",
+      "group_key": "IMG_5487__00001",
+      "source_index": 1,
+      "crop_index": 1,
+      "crop_bbox": [
+        1298,
+        1802,
+        1725,
+        2229
+      ],
+      "crop_size": [
+        427,
+        427
+      ],
+      "image": "images/0000011_IMG_5487_c01_s427.png",
+      "mask": "masks/0000011_IMG_5487_c01_s427.png",
+      "combo": "combo/0000011_IMG_5487_c01_s427.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5487.jpg",
+      "group_key": "IMG_5487__00001",
+      "source_index": 1,
+      "crop_index": 2,
+      "crop_bbox": [
+        1277,
+        1781,
+        1746,
+        2250
+      ],
+      "crop_size": [
+        469,
+        469
+      ],
+      "image": "images/0000012_IMG_5487_c02_s469.png",
+      "mask": "masks/0000012_IMG_5487_c02_s469.png",
+      "combo": "combo/0000012_IMG_5487_c02_s469.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5487.jpg",
+      "group_key": "IMG_5487__00001",
+      "source_index": 1,
+      "crop_index": 3,
+      "crop_bbox": [
+        1256,
+        1760,
+        1768,
+        2272
+      ],
+      "crop_size": [
+        512,
+        512
+      ],
+      "image": "images/0000013_IMG_5487_c03_s512.png",
+      "mask": "masks/0000013_IMG_5487_c03_s512.png",
+      "combo": "combo/0000013_IMG_5487_c03_s512.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5487.jpg",
+      "group_key": "IMG_5487__00001",
+      "source_index": 1,
+      "crop_index": 4,
+      "crop_bbox": [
+        1234,
+        1738,
+        1789,
+        2293
+      ],
+      "crop_size": [
+        555,
+        555
+      ],
+      "image": "images/0000014_IMG_5487_c04_s555.png",
+      "mask": "masks/0000014_IMG_5487_c04_s555.png",
+      "combo": "combo/0000014_IMG_5487_c04_s555.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5487.jpg",
+      "group_key": "IMG_5487__00001",
+      "source_index": 1,
+      "crop_index": 5,
+      "crop_bbox": [
+        1213,
+        1717,
+        1810,
+        2314
+      ],
+      "crop_size": [
+        597,
+        597
+      ],
+      "image": "images/0000015_IMG_5487_c05_s597.png",
+      "mask": "masks/0000015_IMG_5487_c05_s597.png",
+      "combo": "combo/0000015_IMG_5487_c05_s597.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5487.jpg",
+      "group_key": "IMG_5487__00001",
+      "source_index": 1,
+      "crop_index": 6,
+      "crop_bbox": [
+        1192,
+        1696,
+        1832,
+        2336
+      ],
+      "crop_size": [
+        640,
+        640
+      ],
+      "image": "images/0000016_IMG_5487_c06_s640.png",
+      "mask": "masks/0000016_IMG_5487_c06_s640.png",
+      "combo": "combo/0000016_IMG_5487_c06_s640.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5487.jpg",
+      "group_key": "IMG_5487__00001",
+      "source_index": 1,
+      "crop_index": 7,
+      "crop_bbox": [
+        1170,
+        1674,
+        1853,
+        2357
+      ],
+      "crop_size": [
+        683,
+        683
+      ],
+      "image": "images/0000017_IMG_5487_c07_s683.png",
+      "mask": "masks/0000017_IMG_5487_c07_s683.png",
+      "combo": "combo/0000017_IMG_5487_c07_s683.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5487.jpg",
+      "group_key": "IMG_5487__00001",
+      "source_index": 1,
+      "crop_index": 8,
+      "crop_bbox": [
+        1149,
+        1653,
+        1874,
+        2378
+      ],
+      "crop_size": [
+        725,
+        725
+      ],
+      "image": "images/0000018_IMG_5487_c08_s725.png",
+      "mask": "masks/0000018_IMG_5487_c08_s725.png",
+      "combo": "combo/0000018_IMG_5487_c08_s725.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5487.jpg",
+      "group_key": "IMG_5487__00001",
+      "source_index": 1,
+      "crop_index": 9,
+      "crop_bbox": [
+        1128,
+        1632,
+        1896,
+        2400
+      ],
+      "crop_size": [
+        768,
+        768
+      ],
+      "image": "images/0000019_IMG_5487_c09_s768.png",
+      "mask": "masks/0000019_IMG_5487_c09_s768.png",
+      "combo": "combo/0000019_IMG_5487_c09_s768.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5488.jpg",
+      "group_key": "IMG_5488__00002",
+      "source_index": 2,
+      "crop_index": 0,
+      "crop_bbox": [
+        1320,
+        1824,
+        1704,
+        2208
+      ],
+      "crop_size": [
+        384,
+        384
+      ],
+      "image": "images/0000020_IMG_5488_c00_s384.png",
+      "mask": "masks/0000020_IMG_5488_c00_s384.png",
+      "combo": "combo/0000020_IMG_5488_c00_s384.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5488.jpg",
+      "group_key": "IMG_5488__00002",
+      "source_index": 2,
+      "crop_index": 1,
+      "crop_bbox": [
+        1298,
+        1802,
+        1725,
+        2229
+      ],
+      "crop_size": [
+        427,
+        427
+      ],
+      "image": "images/0000021_IMG_5488_c01_s427.png",
+      "mask": "masks/0000021_IMG_5488_c01_s427.png",
+      "combo": "combo/0000021_IMG_5488_c01_s427.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5488.jpg",
+      "group_key": "IMG_5488__00002",
+      "source_index": 2,
+      "crop_index": 2,
+      "crop_bbox": [
+        1277,
+        1781,
+        1746,
+        2250
+      ],
+      "crop_size": [
+        469,
+        469
+      ],
+      "image": "images/0000022_IMG_5488_c02_s469.png",
+      "mask": "masks/0000022_IMG_5488_c02_s469.png",
+      "combo": "combo/0000022_IMG_5488_c02_s469.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5488.jpg",
+      "group_key": "IMG_5488__00002",
+      "source_index": 2,
+      "crop_index": 3,
+      "crop_bbox": [
+        1256,
+        1760,
+        1768,
+        2272
+      ],
+      "crop_size": [
+        512,
+        512
+      ],
+      "image": "images/0000023_IMG_5488_c03_s512.png",
+      "mask": "masks/0000023_IMG_5488_c03_s512.png",
+      "combo": "combo/0000023_IMG_5488_c03_s512.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5488.jpg",
+      "group_key": "IMG_5488__00002",
+      "source_index": 2,
+      "crop_index": 4,
+      "crop_bbox": [
+        1234,
+        1738,
+        1789,
+        2293
+      ],
+      "crop_size": [
+        555,
+        555
+      ],
+      "image": "images/0000024_IMG_5488_c04_s555.png",
+      "mask": "masks/0000024_IMG_5488_c04_s555.png",
+      "combo": "combo/0000024_IMG_5488_c04_s555.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5488.jpg",
+      "group_key": "IMG_5488__00002",
+      "source_index": 2,
+      "crop_index": 5,
+      "crop_bbox": [
+        1213,
+        1717,
+        1810,
+        2314
+      ],
+      "crop_size": [
+        597,
+        597
+      ],
+      "image": "images/0000025_IMG_5488_c05_s597.png",
+      "mask": "masks/0000025_IMG_5488_c05_s597.png",
+      "combo": "combo/0000025_IMG_5488_c05_s597.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5488.jpg",
+      "group_key": "IMG_5488__00002",
+      "source_index": 2,
+      "crop_index": 6,
+      "crop_bbox": [
+        1192,
+        1696,
+        1832,
+        2336
+      ],
+      "crop_size": [
+        640,
+        640
+      ],
+      "image": "images/0000026_IMG_5488_c06_s640.png",
+      "mask": "masks/0000026_IMG_5488_c06_s640.png",
+      "combo": "combo/0000026_IMG_5488_c06_s640.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5488.jpg",
+      "group_key": "IMG_5488__00002",
+      "source_index": 2,
+      "crop_index": 7,
+      "crop_bbox": [
+        1170,
+        1674,
+        1853,
+        2357
+      ],
+      "crop_size": [
+        683,
+        683
+      ],
+      "image": "images/0000027_IMG_5488_c07_s683.png",
+      "mask": "masks/0000027_IMG_5488_c07_s683.png",
+      "combo": "combo/0000027_IMG_5488_c07_s683.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5488.jpg",
+      "group_key": "IMG_5488__00002",
+      "source_index": 2,
+      "crop_index": 8,
+      "crop_bbox": [
+        1149,
+        1653,
+        1874,
+        2378
+      ],
+      "crop_size": [
+        725,
+        725
+      ],
+      "image": "images/0000028_IMG_5488_c08_s725.png",
+      "mask": "masks/0000028_IMG_5488_c08_s725.png",
+      "combo": "combo/0000028_IMG_5488_c08_s725.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5488.jpg",
+      "group_key": "IMG_5488__00002",
+      "source_index": 2,
+      "crop_index": 9,
+      "crop_bbox": [
+        1128,
+        1632,
+        1896,
+        2400
+      ],
+      "crop_size": [
+        768,
+        768
+      ],
+      "image": "images/0000029_IMG_5488_c09_s768.png",
+      "mask": "masks/0000029_IMG_5488_c09_s768.png",
+      "combo": "combo/0000029_IMG_5488_c09_s768.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5489.jpg",
+      "group_key": "IMG_5489__00003",
+      "source_index": 3,
+      "crop_index": 0,
+      "crop_bbox": [
+        1320,
+        1824,
+        1704,
+        2208
+      ],
+      "crop_size": [
+        384,
+        384
+      ],
+      "image": "images/0000030_IMG_5489_c00_s384.png",
+      "mask": "masks/0000030_IMG_5489_c00_s384.png",
+      "combo": "combo/0000030_IMG_5489_c00_s384.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5489.jpg",
+      "group_key": "IMG_5489__00003",
+      "source_index": 3,
+      "crop_index": 1,
+      "crop_bbox": [
+        1298,
+        1802,
+        1725,
+        2229
+      ],
+      "crop_size": [
+        427,
+        427
+      ],
+      "image": "images/0000031_IMG_5489_c01_s427.png",
+      "mask": "masks/0000031_IMG_5489_c01_s427.png",
+      "combo": "combo/0000031_IMG_5489_c01_s427.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5489.jpg",
+      "group_key": "IMG_5489__00003",
+      "source_index": 3,
+      "crop_index": 2,
+      "crop_bbox": [
+        1277,
+        1781,
+        1746,
+        2250
+      ],
+      "crop_size": [
+        469,
+        469
+      ],
+      "image": "images/0000032_IMG_5489_c02_s469.png",
+      "mask": "masks/0000032_IMG_5489_c02_s469.png",
+      "combo": "combo/0000032_IMG_5489_c02_s469.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5489.jpg",
+      "group_key": "IMG_5489__00003",
+      "source_index": 3,
+      "crop_index": 3,
+      "crop_bbox": [
+        1256,
+        1760,
+        1768,
+        2272
+      ],
+      "crop_size": [
+        512,
+        512
+      ],
+      "image": "images/0000033_IMG_5489_c03_s512.png",
+      "mask": "masks/0000033_IMG_5489_c03_s512.png",
+      "combo": "combo/0000033_IMG_5489_c03_s512.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5489.jpg",
+      "group_key": "IMG_5489__00003",
+      "source_index": 3,
+      "crop_index": 4,
+      "crop_bbox": [
+        1234,
+        1738,
+        1789,
+        2293
+      ],
+      "crop_size": [
+        555,
+        555
+      ],
+      "image": "images/0000034_IMG_5489_c04_s555.png",
+      "mask": "masks/0000034_IMG_5489_c04_s555.png",
+      "combo": "combo/0000034_IMG_5489_c04_s555.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5489.jpg",
+      "group_key": "IMG_5489__00003",
+      "source_index": 3,
+      "crop_index": 5,
+      "crop_bbox": [
+        1213,
+        1717,
+        1810,
+        2314
+      ],
+      "crop_size": [
+        597,
+        597
+      ],
+      "image": "images/0000035_IMG_5489_c05_s597.png",
+      "mask": "masks/0000035_IMG_5489_c05_s597.png",
+      "combo": "combo/0000035_IMG_5489_c05_s597.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5489.jpg",
+      "group_key": "IMG_5489__00003",
+      "source_index": 3,
+      "crop_index": 6,
+      "crop_bbox": [
+        1192,
+        1696,
+        1832,
+        2336
+      ],
+      "crop_size": [
+        640,
+        640
+      ],
+      "image": "images/0000036_IMG_5489_c06_s640.png",
+      "mask": "masks/0000036_IMG_5489_c06_s640.png",
+      "combo": "combo/0000036_IMG_5489_c06_s640.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5489.jpg",
+      "group_key": "IMG_5489__00003",
+      "source_index": 3,
+      "crop_index": 7,
+      "crop_bbox": [
+        1170,
+        1674,
+        1853,
+        2357
+      ],
+      "crop_size": [
+        683,
+        683
+      ],
+      "image": "images/0000037_IMG_5489_c07_s683.png",
+      "mask": "masks/0000037_IMG_5489_c07_s683.png",
+      "combo": "combo/0000037_IMG_5489_c07_s683.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5489.jpg",
+      "group_key": "IMG_5489__00003",
+      "source_index": 3,
+      "crop_index": 8,
+      "crop_bbox": [
+        1149,
+        1653,
+        1874,
+        2378
+      ],
+      "crop_size": [
+        725,
+        725
+      ],
+      "image": "images/0000038_IMG_5489_c08_s725.png",
+      "mask": "masks/0000038_IMG_5489_c08_s725.png",
+      "combo": "combo/0000038_IMG_5489_c08_s725.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5489.jpg",
+      "group_key": "IMG_5489__00003",
+      "source_index": 3,
+      "crop_index": 9,
+      "crop_bbox": [
+        1128,
+        1632,
+        1896,
+        2400
+      ],
+      "crop_size": [
+        768,
+        768
+      ],
+      "image": "images/0000039_IMG_5489_c09_s768.png",
+      "mask": "masks/0000039_IMG_5489_c09_s768.png",
+      "combo": "combo/0000039_IMG_5489_c09_s768.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5490.jpg",
+      "group_key": "IMG_5490__00004",
+      "source_index": 4,
+      "crop_index": 0,
+      "crop_bbox": [
+        1320,
+        1824,
+        1704,
+        2208
+      ],
+      "crop_size": [
+        384,
+        384
+      ],
+      "image": "images/0000040_IMG_5490_c00_s384.png",
+      "mask": "masks/0000040_IMG_5490_c00_s384.png",
+      "combo": "combo/0000040_IMG_5490_c00_s384.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5490.jpg",
+      "group_key": "IMG_5490__00004",
+      "source_index": 4,
+      "crop_index": 1,
+      "crop_bbox": [
+        1298,
+        1802,
+        1725,
+        2229
+      ],
+      "crop_size": [
+        427,
+        427
+      ],
+      "image": "images/0000041_IMG_5490_c01_s427.png",
+      "mask": "masks/0000041_IMG_5490_c01_s427.png",
+      "combo": "combo/0000041_IMG_5490_c01_s427.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5490.jpg",
+      "group_key": "IMG_5490__00004",
+      "source_index": 4,
+      "crop_index": 2,
+      "crop_bbox": [
+        1277,
+        1781,
+        1746,
+        2250
+      ],
+      "crop_size": [
+        469,
+        469
+      ],
+      "image": "images/0000042_IMG_5490_c02_s469.png",
+      "mask": "masks/0000042_IMG_5490_c02_s469.png",
+      "combo": "combo/0000042_IMG_5490_c02_s469.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5490.jpg",
+      "group_key": "IMG_5490__00004",
+      "source_index": 4,
+      "crop_index": 3,
+      "crop_bbox": [
+        1256,
+        1760,
+        1768,
+        2272
+      ],
+      "crop_size": [
+        512,
+        512
+      ],
+      "image": "images/0000043_IMG_5490_c03_s512.png",
+      "mask": "masks/0000043_IMG_5490_c03_s512.png",
+      "combo": "combo/0000043_IMG_5490_c03_s512.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5490.jpg",
+      "group_key": "IMG_5490__00004",
+      "source_index": 4,
+      "crop_index": 4,
+      "crop_bbox": [
+        1234,
+        1738,
+        1789,
+        2293
+      ],
+      "crop_size": [
+        555,
+        555
+      ],
+      "image": "images/0000044_IMG_5490_c04_s555.png",
+      "mask": "masks/0000044_IMG_5490_c04_s555.png",
+      "combo": "combo/0000044_IMG_5490_c04_s555.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5490.jpg",
+      "group_key": "IMG_5490__00004",
+      "source_index": 4,
+      "crop_index": 5,
+      "crop_bbox": [
+        1213,
+        1717,
+        1810,
+        2314
+      ],
+      "crop_size": [
+        597,
+        597
+      ],
+      "image": "images/0000045_IMG_5490_c05_s597.png",
+      "mask": "masks/0000045_IMG_5490_c05_s597.png",
+      "combo": "combo/0000045_IMG_5490_c05_s597.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5490.jpg",
+      "group_key": "IMG_5490__00004",
+      "source_index": 4,
+      "crop_index": 6,
+      "crop_bbox": [
+        1192,
+        1696,
+        1832,
+        2336
+      ],
+      "crop_size": [
+        640,
+        640
+      ],
+      "image": "images/0000046_IMG_5490_c06_s640.png",
+      "mask": "masks/0000046_IMG_5490_c06_s640.png",
+      "combo": "combo/0000046_IMG_5490_c06_s640.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5490.jpg",
+      "group_key": "IMG_5490__00004",
+      "source_index": 4,
+      "crop_index": 7,
+      "crop_bbox": [
+        1170,
+        1674,
+        1853,
+        2357
+      ],
+      "crop_size": [
+        683,
+        683
+      ],
+      "image": "images/0000047_IMG_5490_c07_s683.png",
+      "mask": "masks/0000047_IMG_5490_c07_s683.png",
+      "combo": "combo/0000047_IMG_5490_c07_s683.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5490.jpg",
+      "group_key": "IMG_5490__00004",
+      "source_index": 4,
+      "crop_index": 8,
+      "crop_bbox": [
+        1149,
+        1653,
+        1874,
+        2378
+      ],
+      "crop_size": [
+        725,
+        725
+      ],
+      "image": "images/0000048_IMG_5490_c08_s725.png",
+      "mask": "masks/0000048_IMG_5490_c08_s725.png",
+      "combo": "combo/0000048_IMG_5490_c08_s725.png"
+    },
+    {
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5490.jpg",
+      "group_key": "IMG_5490__00004",
+      "source_index": 4,
+      "crop_index": 9,
+      "crop_bbox": [
+        1128,
+        1632,
+        1896,
+        2400
+      ],
+      "crop_size": [
+        768,
+        768
+      ],
+      "image": "images/0000049_IMG_5490_c09_s768.png",
+      "mask": "masks/0000049_IMG_5490_c09_s768.png",
+      "combo": "combo/0000049_IMG_5490_c09_s768.png"
+    }
+  ],
+  "duplicates": [
+    {
+      "group_key": "IMG_5486__00000",
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5486.jpg",
+      "items": [
+        {
+          "crop_index": 0,
+          "image": "images/0000000_IMG_5486_c00_s384.png",
+          "mask": "masks/0000000_IMG_5486_c00_s384.png",
+          "combo": "combo/0000000_IMG_5486_c00_s384.png"
+        },
+        {
+          "crop_index": 1,
+          "image": "images/0000001_IMG_5486_c01_s427.png",
+          "mask": "masks/0000001_IMG_5486_c01_s427.png",
+          "combo": "combo/0000001_IMG_5486_c01_s427.png"
+        },
+        {
+          "crop_index": 2,
+          "image": "images/0000002_IMG_5486_c02_s469.png",
+          "mask": "masks/0000002_IMG_5486_c02_s469.png",
+          "combo": "combo/0000002_IMG_5486_c02_s469.png"
+        },
+        {
+          "crop_index": 3,
+          "image": "images/0000003_IMG_5486_c03_s512.png",
+          "mask": "masks/0000003_IMG_5486_c03_s512.png",
+          "combo": "combo/0000003_IMG_5486_c03_s512.png"
+        },
+        {
+          "crop_index": 4,
+          "image": "images/0000004_IMG_5486_c04_s555.png",
+          "mask": "masks/0000004_IMG_5486_c04_s555.png",
+          "combo": "combo/0000004_IMG_5486_c04_s555.png"
+        },
+        {
+          "crop_index": 5,
+          "image": "images/0000005_IMG_5486_c05_s597.png",
+          "mask": "masks/0000005_IMG_5486_c05_s597.png",
+          "combo": "combo/0000005_IMG_5486_c05_s597.png"
+        },
+        {
+          "crop_index": 6,
+          "image": "images/0000006_IMG_5486_c06_s640.png",
+          "mask": "masks/0000006_IMG_5486_c06_s640.png",
+          "combo": "combo/0000006_IMG_5486_c06_s640.png"
+        },
+        {
+          "crop_index": 7,
+          "image": "images/0000007_IMG_5486_c07_s683.png",
+          "mask": "masks/0000007_IMG_5486_c07_s683.png",
+          "combo": "combo/0000007_IMG_5486_c07_s683.png"
+        },
+        {
+          "crop_index": 8,
+          "image": "images/0000008_IMG_5486_c08_s725.png",
+          "mask": "masks/0000008_IMG_5486_c08_s725.png",
+          "combo": "combo/0000008_IMG_5486_c08_s725.png"
+        },
+        {
+          "crop_index": 9,
+          "image": "images/0000009_IMG_5486_c09_s768.png",
+          "mask": "masks/0000009_IMG_5486_c09_s768.png",
+          "combo": "combo/0000009_IMG_5486_c09_s768.png"
+        }
+      ],
+      "expected_count": 10,
+      "actual_count": 10
+    },
+    {
+      "group_key": "IMG_5487__00001",
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5487.jpg",
+      "items": [
+        {
+          "crop_index": 0,
+          "image": "images/0000010_IMG_5487_c00_s384.png",
+          "mask": "masks/0000010_IMG_5487_c00_s384.png",
+          "combo": "combo/0000010_IMG_5487_c00_s384.png"
+        },
+        {
+          "crop_index": 1,
+          "image": "images/0000011_IMG_5487_c01_s427.png",
+          "mask": "masks/0000011_IMG_5487_c01_s427.png",
+          "combo": "combo/0000011_IMG_5487_c01_s427.png"
+        },
+        {
+          "crop_index": 2,
+          "image": "images/0000012_IMG_5487_c02_s469.png",
+          "mask": "masks/0000012_IMG_5487_c02_s469.png",
+          "combo": "combo/0000012_IMG_5487_c02_s469.png"
+        },
+        {
+          "crop_index": 3,
+          "image": "images/0000013_IMG_5487_c03_s512.png",
+          "mask": "masks/0000013_IMG_5487_c03_s512.png",
+          "combo": "combo/0000013_IMG_5487_c03_s512.png"
+        },
+        {
+          "crop_index": 4,
+          "image": "images/0000014_IMG_5487_c04_s555.png",
+          "mask": "masks/0000014_IMG_5487_c04_s555.png",
+          "combo": "combo/0000014_IMG_5487_c04_s555.png"
+        },
+        {
+          "crop_index": 5,
+          "image": "images/0000015_IMG_5487_c05_s597.png",
+          "mask": "masks/0000015_IMG_5487_c05_s597.png",
+          "combo": "combo/0000015_IMG_5487_c05_s597.png"
+        },
+        {
+          "crop_index": 6,
+          "image": "images/0000016_IMG_5487_c06_s640.png",
+          "mask": "masks/0000016_IMG_5487_c06_s640.png",
+          "combo": "combo/0000016_IMG_5487_c06_s640.png"
+        },
+        {
+          "crop_index": 7,
+          "image": "images/0000017_IMG_5487_c07_s683.png",
+          "mask": "masks/0000017_IMG_5487_c07_s683.png",
+          "combo": "combo/0000017_IMG_5487_c07_s683.png"
+        },
+        {
+          "crop_index": 8,
+          "image": "images/0000018_IMG_5487_c08_s725.png",
+          "mask": "masks/0000018_IMG_5487_c08_s725.png",
+          "combo": "combo/0000018_IMG_5487_c08_s725.png"
+        },
+        {
+          "crop_index": 9,
+          "image": "images/0000019_IMG_5487_c09_s768.png",
+          "mask": "masks/0000019_IMG_5487_c09_s768.png",
+          "combo": "combo/0000019_IMG_5487_c09_s768.png"
+        }
+      ],
+      "expected_count": 10,
+      "actual_count": 10
+    },
+    {
+      "group_key": "IMG_5488__00002",
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5488.jpg",
+      "items": [
+        {
+          "crop_index": 0,
+          "image": "images/0000020_IMG_5488_c00_s384.png",
+          "mask": "masks/0000020_IMG_5488_c00_s384.png",
+          "combo": "combo/0000020_IMG_5488_c00_s384.png"
+        },
+        {
+          "crop_index": 1,
+          "image": "images/0000021_IMG_5488_c01_s427.png",
+          "mask": "masks/0000021_IMG_5488_c01_s427.png",
+          "combo": "combo/0000021_IMG_5488_c01_s427.png"
+        },
+        {
+          "crop_index": 2,
+          "image": "images/0000022_IMG_5488_c02_s469.png",
+          "mask": "masks/0000022_IMG_5488_c02_s469.png",
+          "combo": "combo/0000022_IMG_5488_c02_s469.png"
+        },
+        {
+          "crop_index": 3,
+          "image": "images/0000023_IMG_5488_c03_s512.png",
+          "mask": "masks/0000023_IMG_5488_c03_s512.png",
+          "combo": "combo/0000023_IMG_5488_c03_s512.png"
+        },
+        {
+          "crop_index": 4,
+          "image": "images/0000024_IMG_5488_c04_s555.png",
+          "mask": "masks/0000024_IMG_5488_c04_s555.png",
+          "combo": "combo/0000024_IMG_5488_c04_s555.png"
+        },
+        {
+          "crop_index": 5,
+          "image": "images/0000025_IMG_5488_c05_s597.png",
+          "mask": "masks/0000025_IMG_5488_c05_s597.png",
+          "combo": "combo/0000025_IMG_5488_c05_s597.png"
+        },
+        {
+          "crop_index": 6,
+          "image": "images/0000026_IMG_5488_c06_s640.png",
+          "mask": "masks/0000026_IMG_5488_c06_s640.png",
+          "combo": "combo/0000026_IMG_5488_c06_s640.png"
+        },
+        {
+          "crop_index": 7,
+          "image": "images/0000027_IMG_5488_c07_s683.png",
+          "mask": "masks/0000027_IMG_5488_c07_s683.png",
+          "combo": "combo/0000027_IMG_5488_c07_s683.png"
+        },
+        {
+          "crop_index": 8,
+          "image": "images/0000028_IMG_5488_c08_s725.png",
+          "mask": "masks/0000028_IMG_5488_c08_s725.png",
+          "combo": "combo/0000028_IMG_5488_c08_s725.png"
+        },
+        {
+          "crop_index": 9,
+          "image": "images/0000029_IMG_5488_c09_s768.png",
+          "mask": "masks/0000029_IMG_5488_c09_s768.png",
+          "combo": "combo/0000029_IMG_5488_c09_s768.png"
+        }
+      ],
+      "expected_count": 10,
+      "actual_count": 10
+    },
+    {
+      "group_key": "IMG_5489__00003",
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5489.jpg",
+      "items": [
+        {
+          "crop_index": 0,
+          "image": "images/0000030_IMG_5489_c00_s384.png",
+          "mask": "masks/0000030_IMG_5489_c00_s384.png",
+          "combo": "combo/0000030_IMG_5489_c00_s384.png"
+        },
+        {
+          "crop_index": 1,
+          "image": "images/0000031_IMG_5489_c01_s427.png",
+          "mask": "masks/0000031_IMG_5489_c01_s427.png",
+          "combo": "combo/0000031_IMG_5489_c01_s427.png"
+        },
+        {
+          "crop_index": 2,
+          "image": "images/0000032_IMG_5489_c02_s469.png",
+          "mask": "masks/0000032_IMG_5489_c02_s469.png",
+          "combo": "combo/0000032_IMG_5489_c02_s469.png"
+        },
+        {
+          "crop_index": 3,
+          "image": "images/0000033_IMG_5489_c03_s512.png",
+          "mask": "masks/0000033_IMG_5489_c03_s512.png",
+          "combo": "combo/0000033_IMG_5489_c03_s512.png"
+        },
+        {
+          "crop_index": 4,
+          "image": "images/0000034_IMG_5489_c04_s555.png",
+          "mask": "masks/0000034_IMG_5489_c04_s555.png",
+          "combo": "combo/0000034_IMG_5489_c04_s555.png"
+        },
+        {
+          "crop_index": 5,
+          "image": "images/0000035_IMG_5489_c05_s597.png",
+          "mask": "masks/0000035_IMG_5489_c05_s597.png",
+          "combo": "combo/0000035_IMG_5489_c05_s597.png"
+        },
+        {
+          "crop_index": 6,
+          "image": "images/0000036_IMG_5489_c06_s640.png",
+          "mask": "masks/0000036_IMG_5489_c06_s640.png",
+          "combo": "combo/0000036_IMG_5489_c06_s640.png"
+        },
+        {
+          "crop_index": 7,
+          "image": "images/0000037_IMG_5489_c07_s683.png",
+          "mask": "masks/0000037_IMG_5489_c07_s683.png",
+          "combo": "combo/0000037_IMG_5489_c07_s683.png"
+        },
+        {
+          "crop_index": 8,
+          "image": "images/0000038_IMG_5489_c08_s725.png",
+          "mask": "masks/0000038_IMG_5489_c08_s725.png",
+          "combo": "combo/0000038_IMG_5489_c08_s725.png"
+        },
+        {
+          "crop_index": 9,
+          "image": "images/0000039_IMG_5489_c09_s768.png",
+          "mask": "masks/0000039_IMG_5489_c09_s768.png",
+          "combo": "combo/0000039_IMG_5489_c09_s768.png"
+        }
+      ],
+      "expected_count": 10,
+      "actual_count": 10
+    },
+    {
+      "group_key": "IMG_5490__00004",
+      "source_path": "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test/IMG_5490.jpg",
+      "items": [
+        {
+          "crop_index": 0,
+          "image": "images/0000040_IMG_5490_c00_s384.png",
+          "mask": "masks/0000040_IMG_5490_c00_s384.png",
+          "combo": "combo/0000040_IMG_5490_c00_s384.png"
+        },
+        {
+          "crop_index": 1,
+          "image": "images/0000041_IMG_5490_c01_s427.png",
+          "mask": "masks/0000041_IMG_5490_c01_s427.png",
+          "combo": "combo/0000041_IMG_5490_c01_s427.png"
+        },
+        {
+          "crop_index": 2,
+          "image": "images/0000042_IMG_5490_c02_s469.png",
+          "mask": "masks/0000042_IMG_5490_c02_s469.png",
+          "combo": "combo/0000042_IMG_5490_c02_s469.png"
+        },
+        {
+          "crop_index": 3,
+          "image": "images/0000043_IMG_5490_c03_s512.png",
+          "mask": "masks/0000043_IMG_5490_c03_s512.png",
+          "combo": "combo/0000043_IMG_5490_c03_s512.png"
+        },
+        {
+          "crop_index": 4,
+          "image": "images/0000044_IMG_5490_c04_s555.png",
+          "mask": "masks/0000044_IMG_5490_c04_s555.png",
+          "combo": "combo/0000044_IMG_5490_c04_s555.png"
+        },
+        {
+          "crop_index": 5,
+          "image": "images/0000045_IMG_5490_c05_s597.png",
+          "mask": "masks/0000045_IMG_5490_c05_s597.png",
+          "combo": "combo/0000045_IMG_5490_c05_s597.png"
+        },
+        {
+          "crop_index": 6,
+          "image": "images/0000046_IMG_5490_c06_s640.png",
+          "mask": "masks/0000046_IMG_5490_c06_s640.png",
+          "combo": "combo/0000046_IMG_5490_c06_s640.png"
+        },
+        {
+          "crop_index": 7,
+          "image": "images/0000047_IMG_5490_c07_s683.png",
+          "mask": "masks/0000047_IMG_5490_c07_s683.png",
+          "combo": "combo/0000047_IMG_5490_c07_s683.png"
+        },
+        {
+          "crop_index": 8,
+          "image": "images/0000048_IMG_5490_c08_s725.png",
+          "mask": "masks/0000048_IMG_5490_c08_s725.png",
+          "combo": "combo/0000048_IMG_5490_c08_s725.png"
+        },
+        {
+          "crop_index": 9,
+          "image": "images/0000049_IMG_5490_c09_s768.png",
+          "mask": "masks/0000049_IMG_5490_c09_s768.png",
+          "combo": "combo/0000049_IMG_5490_c09_s768.png"
+        }
+      ],
+      "expected_count": 10,
+      "actual_count": 10
+    }
+  ],
+  "config": {
+    "split": "test",
+    "target_size": 512,
+    "norm_mode": "imagenet",
+    "crop": {
+      "count": 10,
+      "min_size": 384,
+      "max_size": 768
+    },
+    "augmentation_pipeline": [
+      "GaussianBlur"
+    ],
+    "expected_items": 50,
+    "actual_items": 50
+  }
+}

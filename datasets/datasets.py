@@ -309,7 +309,29 @@ class SegIndex:
         tr_idx = sorted(ids[val_n:])
         return tr_idx, va_idx
 
-
+def build_prepare_tf(split: str, norm_mode: str, include_normalize: bool = True):
+    split = (split or "train").lower()
+    if split == "train":
+        aug = [
+            A.HorizontalFlip(p=0.5),
+            A.VerticalFlip(p=0.1),
+            A.RandomRotate90(p=0.2),
+            A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.5),
+            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.3),
+            A.GaussianBlur(blur_limit=(3, 5), p=0.1),
+        ]
+    elif split == "val":
+        aug = []
+    else:  # test and fallback
+        aug = [
+            A.GaussianBlur(blur_limit=(3, 3), p=0.05),
+        ]
+    if include_normalize:
+        if norm_mode == "clip":
+            aug.append(A.Normalize(mean=CLIP_MEAN, std=CLIP_STD, max_pixel_value=255.0))
+        else:
+            aug.append(A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD, max_pixel_value=255.0))
+    return A.Compose(aug)
 # ----------------------------- Dataset wrapper -----------------------------
 
 def _build_tf(train: bool, size: int, norm_mode: str, include_normalize: bool = True):

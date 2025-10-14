@@ -26,7 +26,6 @@ from utils.utils import (
     DEFAULT_CATEGORIES,
     LS_PALETTE,
     _norm_name,
-    load_aliases_json,
     hex_to_bgr,
 )
 
@@ -84,10 +83,46 @@ def build_default_dacl_aliases():
         # часто встречающиеся:
         "peeling_paint": "SPALLING",
         "damp": "WATER_STAIN",
+        "weathering": "WATER_STAIN",
+        "wetspot": "WATER_STAIN",
+        "wet spot": "WATER_STAIN",
     }
     out = {}
     for k, v in m.items():
         out[_norm_name(k)] = v
+    return out
+
+
+def load_aliases_any(path: str):
+    """
+    Загружает aliases.json в одном из двух форматов:
+    1) {"alias": "CANON", ...}
+    2) {"CANON": ["ALIAS1", "ALIAS2", ...], ...}  <-- как в присланном словарике
+
+    Возвращает словарь: нормализованный_alias -> нормализованное_каноническое_имя.
+    """
+    if not path:
+        return {}
+
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    out = {}
+    # Определяем формат по типу значений
+    for k, v in data.items():
+        if isinstance(v, str):
+            # формат 1: alias -> CANON
+            out[_norm_name(k)] = _norm_name(v)
+        elif isinstance(v, list):
+            # формат 2: CANON -> [ALIASES...]
+            canon_norm = _norm_name(k)
+            # сам канон на всякий случай тоже маппим на себя
+            out[canon_norm] = canon_norm
+            for alias in v:
+                out[_norm_name(alias)] = canon_norm
+        else:
+            # игнорируем странные записи
+            continue
     return out
 
 
@@ -103,6 +138,7 @@ def map_class_to_canonical(raw_name, aliases_tbl, dacl_fallback):
         for k in sorted(DEFAULT_CATEGORIES.keys()):
             if _norm_name(DEFAULT_CATEGORIES[k]) == canon_norm:
                 return DEFAULT_CATEGORIES[k]
+        # Если в DEFAULT_CATEGORIES нет точного канона, вернём None
         return None
     if n in dacl_fallback:
         return dacl_fallback[n]
@@ -125,8 +161,20 @@ def _derive_image_basename_and_ext(json_path: str):
     return base, forced_img_ext
 
 
-def process_one(json_path, images_dir, include_set, aliases_tbl, dacl_fallback,
-                out_matched, out_unmatched, save_filtered_json=True):
+def process_one(
+    json_path,
+    images_dir,
+    include_set,
+    aliases_tbl,
+    dacl_fallback,
+    out_matched,
+    save_filtered_json,
+    class_image_counts,
+    max_per_class
+):
+    """
+    Возвращает 1, если картинка сохранена (после фильтрации и лимитов), иначе 0.
+    """
     with open(json_path, "r", encoding="utf-8") as f:
         ann = json.load(f)
 
@@ -147,15 +195,14 @@ def process_one(json_path, images_dir, include_set, aliases_tbl, dacl_fallback,
     if img_path is None:
         tried = [base + e for e in search_exts]
         print(f"[!] image not found for {json_path} | tried: {tried[:3]}{'...' if len(tried) > 3 else ''}")
-        return 0, 0
+        return 0
 
     img_bgr = cv2.imread(img_path, cv2.IMREAD_COLOR)
     if img_bgr is None:
         print(f"[!] cannot read image: {img_path}")
-        return 0, 0
+        return 0
 
-    matched_objs = []         # список (obj_deepcopy, canon_name)
-    unmatched_polys = []      # список (poly, raw_name)
+    matched_objs = []  # список (obj_deepcopy, canon_name)
 
     for obj in ann.get("objects", []):
         if obj.get("geometryType") != "polygon":
@@ -169,68 +216,87 @@ def process_one(json_path, images_dir, include_set, aliases_tbl, dacl_fallback,
             o = deepcopy(obj)
             o["classTitle"] = canon  # переписываем на канон
             matched_objs.append((o, canon))
-        else:
-            unmatched_polys.append((poly, raw_name))
 
-    # --- matched: сохраняем исходник, маску и фильтрованный JSON ---
-    if matched_objs:
-        include_list = sorted(list(include_set))
-        name_to_idx = {nm: i + 1 for i, nm in enumerate(include_list)}
-        mask = np.zeros((H, W), np.uint8)  # 0=фон, 1..C
+    if not matched_objs:
+        return 0
 
-        for obj, canon in matched_objs:
-            idx = name_to_idx[canon]
-            poly = obj.get("points", {}).get("exterior", [])
-            pm = poly_to_mask(poly, H, W)    # {0,1}
-            mask[pm > 0] = idx               # присваиваем индекс класса
+    # --- применяем лимит по изображениям на класс ---
+    classes_in_image = sorted({canon for (_, canon) in matched_objs})
+    allowed_classes = [c for c in classes_in_image if class_image_counts.get(c, 0) < max_per_class]
 
-        # создаём папки
-        ensure_dir(os.path.join(out_matched, "images"))
-        ensure_dir(os.path.join(out_matched, "masks"))
-        if save_filtered_json:
-            ensure_dir(os.path.join(out_matched, "ann"))
+    if not allowed_classes:
+        # все классы в этой картинке уже достигли лимита по изображениям
+        return 0
 
-        # пишем изображение и маску
-        cv2.imwrite(os.path.join(out_matched, "images", base + ".jpg"), img_bgr)
-        cv2.imwrite(os.path.join(out_matched, "masks",  base + ".png"),  mask)
+    # оставляем только объекты разрешённых классов
+    matched_objs = [(o, c) for (o, c) in matched_objs if c in allowed_classes]
+    if not matched_objs:
+        return 0
 
-        # пишем отфильтрованный JSON (в исходном формате, только нужные объекты)
-        if save_filtered_json:
-            filtered = {
-                "description": ann.get("description", ""),
-                "tags": ann.get("tags", []),
-                "size": {"height": int(H), "width": int(W)},
-                "objects": [o for (o, _) in matched_objs],
-                # полезная служебная инфа:
-                "meta": {
-                    "note": "Filtered to canonical classes",
-                    "canonical_classes": include_list,
-                },
-            }
-            with open(os.path.join(out_matched, "ann", base + ".json"), "w", encoding="utf-8") as fw:
-                json.dump(filtered, fw, ensure_ascii=False)
+    # --- matched: сохраняем исходник, маску, аннотацию и оверлей ---
+    include_list = sorted(list(include_set))
+    name_to_idx = {nm: i + 1 for i, nm in enumerate(include_list)}
+    mask = np.zeros((H, W), np.uint8)  # 0=фон, 1..C
 
-    # --- unmatched: рисуем оверлей с подписями для ручного просмотра ---
-    if unmatched_polys:
-        vis_bgr = img_bgr.copy()
-        palette_names = list(DEFAULT_CATEGORIES.values())
-        for i, (poly, raw_name) in enumerate(unmatched_polys):
-            pal_name = palette_names[i % len(palette_names)]
-            color = hex_to_bgr(LS_PALETTE.get(pal_name, "#FF00FF"))
-            draw_poly_overlay(vis_bgr, poly, color, label=str(raw_name))
-        ensure_dir(os.path.join(out_unmatched, "overlays"))
-        cv2.imwrite(os.path.join(out_unmatched, "overlays", base + ".jpg"), vis_bgr)
+    for obj, canon in matched_objs:
+        idx = name_to_idx[canon]
+        poly = obj.get("points", {}).get("exterior", [])
+        pm = poly_to_mask(poly, H, W)    # {0,1}
+        mask[pm > 0] = idx               # присваиваем индекс класса
 
-    return int(bool(matched_objs)), int(bool(unmatched_polys))
+    # создаём папки
+    ensure_dir(os.path.join(out_matched, "images"))
+    ensure_dir(os.path.join(out_matched, "masks"))
+    if save_filtered_json:
+        ensure_dir(os.path.join(out_matched, "ann"))
+    ensure_dir(os.path.join(out_matched, "overlays"))
+
+    # пишем изображение и маску
+    cv2.imwrite(os.path.join(out_matched, "images", base + ".jpg"), img_bgr)
+    cv2.imwrite(os.path.join(out_matched, "masks",  base + ".png"),  mask)
+
+    # пишем отфильтрованный JSON (в исходном формате, только нужные объекты)
+    if save_filtered_json:
+        filtered = {
+            "description": ann.get("description", ""),
+            "tags": ann.get("tags", []),
+            "size": {"height": int(H), "width": int(W)},
+            "objects": [o for (o, _) in matched_objs],
+            # полезная служебная инфа:
+            "meta": {
+                "note": "Filtered to canonical classes with per-class image cap",
+                "canonical_classes": include_list,
+                "max_per_class": int(max_per_class),
+            },
+        }
+        with open(os.path.join(out_matched, "ann", base + ".json"), "w", encoding="utf-8") as fw:
+            json.dump(filtered, fw, ensure_ascii=False)
+
+    # оверлей по оставшимся объектам
+    vis_bgr = img_bgr.copy()
+    palette_names = list(DEFAULT_CATEGORIES.values())
+    # Для устойчивой раскраски используем индекс по глобальному списку классов
+    for i, (obj, canon) in enumerate(matched_objs):
+        poly = obj.get("points", {}).get("exterior", [])
+        # цвет от канонического имени:
+        pal_name = canon if canon in LS_PALETTE else palette_names[i % len(palette_names)]
+        color = hex_to_bgr(LS_PALETTE.get(pal_name, "#FF00FF"))
+        draw_poly_overlay(vis_bgr, poly, color, label=str(canon))
+    cv2.imwrite(os.path.join(out_matched, "overlays", base + ".jpg"), vis_bgr)
+
+    # обновляем счётчики изображений по классам (по 1 на картинку)
+    for c in sorted({canon for (_, canon) in matched_objs}):
+        class_image_counts[c] += 1
+
+    return 1
 
 
 def main():
-    ap = argparse.ArgumentParser("DACL10K -> фильтр под наши классы + визуализация остальных")
+    ap = argparse.ArgumentParser("DACL10K -> фильтр под наши классы + лимит картинок на класс + визуализация")
     ap.add_argument("--images_dir", required=True, help="Папка с изображениями DACL10K")
     ap.add_argument("--ann_dir", required=True, help="Папка с JSON-аннотациями (по одному на изображение)")
-    ap.add_argument("--out_matched", required=True, help="Куда класть совпавшие (images/, masks/, ann/)")
-    ap.add_argument("--out_unmatched", required=True, help="Куда класть оверлеи с прочими классами")
-    ap.add_argument("--aliases_json", default="", help="aliases.json (опционально)")
+    ap.add_argument("--out_matched", required=True, help="Куда класть совпавшие (images/, masks/, ann/, overlays/)")
+    ap.add_argument("--aliases_json", default="", help="aliases.json (опционально; поддерживает оба формата)")
     ap.add_argument(
         "--only_classes",
         nargs="*",
@@ -238,29 +304,42 @@ def main():
         help="Список наших канонических классов; по умолчанию — все DEFAULT_CATEGORIES",
     )
     ap.add_argument("--no_json", action="store_true", help="Не сохранять фильтрованный JSON (по умолчанию сохраняем)")
+    ap.add_argument("--max_per_class", type=int, default=200, help="Максимум изображений на класс (по умолчанию 200)")
     args = ap.parse_args()
 
-    aliases_tbl = load_aliases_json(args.aliases_json) if args.aliases_json else {}
+    aliases_tbl = load_aliases_any(args.aliases_json) if args.aliases_json else {}
     dacl_fallback = build_default_dacl_aliases()
 
     include_set = set(args.only_classes) if args.only_classes else set(DEFAULT_CATEGORIES.values())
     os.makedirs(args.out_matched, exist_ok=True)
-    os.makedirs(args.out_unmatched, exist_ok=True)
 
     jsons = sorted(glob.glob(os.path.join(args.ann_dir, "*.json")))
-    m_cnt = u_cnt = 0
+    saved_cnt = 0
+    class_image_counts = defaultdict(int)
 
     pbar = tqdm(jsons, total=len(jsons), desc="DACL10K", unit="img")
     for jp in pbar:
-        m, u = process_one(
-            jp, args.images_dir, include_set, aliases_tbl, dacl_fallback,
-            args.out_matched, args.out_unmatched, save_filtered_json=not args.no_json
+        saved = process_one(
+            jp,
+            args.images_dir,
+            include_set,
+            aliases_tbl,
+            dacl_fallback,
+            args.out_matched,
+            save_filtered_json=not args.no_json,
+            class_image_counts=class_image_counts,
+            max_per_class=args.max_per_class,
         )
-        m_cnt += m
-        u_cnt += u
-        pbar.set_postfix_str(f"matched={m_cnt} unmatched={u_cnt}")
+        saved_cnt += saved
+        # короткий постфикс по основным классам
+        top_stats = ", ".join(f"{k}:{v}" for k, v in sorted(class_image_counts.items()))
+        pbar.set_postfix_str(f"saved={saved_cnt} | {top_stats}")
 
-    print(f"[i] done. matched images: {m_cnt}, unmatched overlays: {u_cnt}")
+    print(f"[i] done. saved images: {saved_cnt}")
+    if class_image_counts:
+        print("[i] per-class image counts:")
+        for k in sorted(class_image_counts.keys()):
+            print(f"  - {k}: {class_image_counts[k]} / {args.max_per_class}")
 
 
 if __name__ == "__main__":

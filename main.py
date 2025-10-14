@@ -3,7 +3,7 @@ import os, json, math, argparse, random, sys
 import numpy as np
 import cv2
 from tqdm.auto import tqdm
-
+from typing import Optional
 # ensure project root on sys.path
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
@@ -13,13 +13,14 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from utils.utils import *
-from datasets.datasets import TileIndex, TilesDataset, SegIndex, SegDataset, _build_tf, load_coco_class_order
+from datasets.datasets import (TileIndex, TilesDataset, SegIndex, SegDataset,
+                               _build_tf, build_prepare_tf, load_coco_class_order)
 from model_zoo.models import CLIPHead, init_head_from_text, OvSegModel, get_seg_model
 
 torch.set_float32_matmul_precision('high')
 
 
-DEFAULT_IMAGES_DIR = "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/images"
+DEFAULT_IMAGES_DIR = "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/train"
 DEFAULT_COCO_JSON = "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/annotations/result_coco.json"
 DEFAULT_TEST_DIR = "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test"
 DEFAULT_OUT_DIR = "/home/sasha/Facade_segmentation/results"
@@ -68,7 +69,7 @@ def parse_args():
     ap.add_argument("--seg_model", default="deeplabv3_resnet50")
     ap.add_argument("--seg_img_size", type=int, default=512)
     ap.add_argument("--seg_batch_size", type=int, default=6)
-    ap.add_argument("--seg_dup", type=int, default=1)
+    ap.add_argument("--seg_dup", type=int, default=50)
     ap.add_argument("--seg_weights", default="imagenet")
 
     # ovseg
@@ -88,6 +89,25 @@ def parse_args():
     ap.add_argument("--prep_norm_mode", choices=["clip", "imagenet"], default="imagenet",
                     help="Какой набор аугментаций использовать при подготовке (влияет на нормировку при трене)")
     ap.add_argument("--prep_seed", type=int, default=42, help="Сид для аугментаций в seg_prepare")
+
+    ap.add_argument("--prep_train_crop_count", type=int, default=30,
+                    help="Сколько кропов генерировать для каждого train-изображения при подготовке")
+    ap.add_argument("--prep_val_crop_count", type=int, default=30,
+                    help="Сколько кропов генерировать для каждого val-изображения при подготовке")
+    ap.add_argument("--prep_test_crop_count", type=int, default=10,
+                    help="Сколько кропов генерировать для каждого test-изображения при подготовке")
+    ap.add_argument("--prep_train_crop_min", type=int, default=384,
+                    help="Минимальный размер (сторона) случайного train-кропа")
+    ap.add_argument("--prep_train_crop_max", type=int, default=768,
+                    help="Максимальный размер (сторона) случайного train-кропа")
+    ap.add_argument("--prep_val_crop_min", type=int, default=384,
+                    help="Минимальный размер (сторона) center-кропа для валидации")
+    ap.add_argument("--prep_val_crop_max", type=int, default=768,
+                    help="Максимальный размер (сторона) center-кропа для валидации")
+    ap.add_argument("--prep_test_crop_min", type=int, default=384,
+                    help="Минимальный размер (сторона) тестового кропа")
+    ap.add_argument("--prep_test_crop_max", type=int, default=768,
+                    help="Максимальный размер (сторона) тестового кропа")
 
     args = ap.parse_args()
 
@@ -238,9 +258,41 @@ def _mask_to_color(mask, class_names):
         color[mask == idx] = hex_to_bgr(LS_PALETTE.get(name, "#FF00FF"))
     return color
 
+def _generate_crop_sizes(split_name: str, count: int, size_min: int, size_max: int, rng: random.Random):
+    count = max(0, int(count))
+    if count == 0:
+        return []
+    size_min = max(32, int(size_min))
+    size_max = max(size_min, int(size_max))
+    split_name = (split_name or "train").lower()
+    if split_name == "train":
+        return [int(rng.randint(size_min, size_max)) for _ in range(count)]
+    if count == 1:
+        return [int(round((size_min + size_max) / 2.0))]
+    vals = np.linspace(size_min, size_max, count)
+    return [int(round(v)) for v in vals]
 
+
+def _sample_crop_box(split_name: str, H: int, W: int, side: int, rng: random.Random):
+    side = int(max(1, min(side, H, W)))
+    split_name = (split_name or "train").lower()
+    if split_name == "train":
+        y0 = 0 if H == side else rng.randint(0, H - side)
+        x0 = 0 if W == side else rng.randint(0, W - side)
+    else:  # center crop for val/test
+        y0 = max(0, (H - side) // 2)
+        x0 = max(0, (W - side) // 2)
+    return int(x0), int(y0), int(side), int(side)
+
+
+def _resize_image_and_mask(image: np.ndarray, mask: np.ndarray, size: int):
+    interp_img = cv2.INTER_AREA if image.shape[0] > size or image.shape[1] > size else cv2.INTER_LINEAR
+    resized_image = cv2.resize(image, (size, size), interpolation=interp_img)
+    resized_mask = cv2.resize(mask, (size, size), interpolation=cv2.INTER_NEAREST)
+    return resized_image, resized_mask
 def _export_seg_split(seg_index: SegIndex, idxs, split_name: str, out_root: str,
-                      size: int, norm_mode: str, alpha: float = 0.6):
+                      size: int, norm_mode: str, alpha: float = 0.6, crop_conf=None,
+                      rng: Optional[random.Random] = None):
     split_root = os.path.join(out_root, split_name)
     img_dir = os.path.join(split_root, "images")
     mask_dir = os.path.join(split_root, "masks")
@@ -249,44 +301,142 @@ def _export_seg_split(seg_index: SegIndex, idxs, split_name: str, out_root: str,
     os.makedirs(mask_dir, exist_ok=True)
     os.makedirs(combo_dir, exist_ok=True)
 
-    tf = _build_tf(train=(split_name == "train"), size=size, norm_mode=norm_mode, include_normalize=False)
+    rng = rng or random.Random()
+    crop_conf = crop_conf or {}
+    crop_count = max(0, int(crop_conf.get("count", 1)))
+    crop_min = int(crop_conf.get("min_size", size))
+    crop_max = int(crop_conf.get("max_size", size))
+    tf = build_prepare_tf(split_name, norm_mode, include_normalize=False)
+    tf_pipeline = [type(t).__name__ for t in getattr(tf, "transforms", [])]
     meta = []
-    for i, idx in enumerate(tqdm(idxs, desc=f"Prepare {split_name}", leave=False)):
+    duplicate_groups = {}
+    mismatched = []
+    sample_counter = 0
+    for idx in tqdm(idxs, desc=f"Prepare {split_name}", leave=False):
         rec = seg_index.items[idx]
         img_bgr = cv2.imread(rec["path"], cv2.IMREAD_COLOR)
         if img_bgr is None:
             continue
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        tfed = tf(image=img_rgb, mask=rec["mask"])
-        img_tf = tfed["image"]
-        mask_tf = tfed["mask"].astype(np.uint8)
+        mask = rec["mask"].astype(np.uint8)
 
         base = os.path.splitext(os.path.basename(rec["path"]))[0]
         safe_base = base.replace(" ", "_")
-        name = f"{i:05d}_{safe_base}"
+        group_key = f"{safe_base}__{idx:05d}"
 
-        img_path = os.path.join(img_dir, name + ".png")
-        mask_path = os.path.join(mask_dir, name + ".png")
-        combo_path = os.path.join(combo_dir, name + ".png")
-
-        cv2.imwrite(img_path, cv2.cvtColor(img_tf, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_PNG_COMPRESSION, 3])
-        cv2.imwrite(mask_path, mask_tf, [cv2.IMWRITE_PNG_COMPRESSION, 3])
-        color_map = _mask_to_color(mask_tf, seg_index.classes)
-        save_overlay(img_tf, color_map, combo_path, alpha=alpha, blur=0,
-                     add_legend=True, class_names=seg_index.classes, palette=LS_PALETTE)
-
-        meta.append({
+        sizes = _generate_crop_sizes(split_name, crop_count, crop_min, crop_max, rng)
+        duplicate_groups[group_key] = {
             "source_path": rec["path"],
-            "image": os.path.relpath(img_path, split_root),
-            "mask": os.path.relpath(mask_path, split_root),
-            "combo": os.path.relpath(combo_path, split_root),
-        })
+            "items": [],
+            "expected_count": int(len(sizes)),
+        }
 
+        H, W = mask.shape[:2]
+        generated_here = 0
+        for crop_idx, desired_side in enumerate(sizes):
+            x0, y0, crop_w, crop_h = _sample_crop_box(split_name, H, W, desired_side, rng)
+            x1 = min(W, x0 + crop_w)
+            y1 = min(H, y0 + crop_h)
+            crop_img = img_rgb[y0:y1, x0:x1]
+            crop_mask = mask[y0:y1, x0:x1]
+            if crop_img.size == 0 or crop_mask.size == 0:
+                continue
+
+            resized_img, resized_mask = _resize_image_and_mask(crop_img, crop_mask, size)
+            tfed = tf(image=resized_img, mask=resized_mask)
+            img_tf = tfed["image"]
+            mask_tf = tfed["mask"].astype(np.uint8)
+            if img_tf.dtype != np.uint8:
+                img_tf = np.clip(img_tf, 0, 255).astype(np.uint8)
+
+            name = f"{sample_counter:07d}_{safe_base}_c{crop_idx:02d}_s{crop_w}"
+            img_path = os.path.join(img_dir, name + ".png")
+            mask_path = os.path.join(mask_dir, name + ".png")
+            combo_path = os.path.join(combo_dir, name + ".png")
+
+            cv2.imwrite(img_path, cv2.cvtColor(img_tf, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_PNG_COMPRESSION, 3])
+            cv2.imwrite(mask_path, mask_tf, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+            color_map = _mask_to_color(mask_tf, seg_index.classes)
+            save_overlay(img_tf, color_map, combo_path, alpha=alpha, blur=0,
+                         add_legend=True, class_names=seg_index.classes, palette=LS_PALETTE)
+
+            rel_img = os.path.relpath(img_path, split_root)
+            rel_mask = os.path.relpath(mask_path, split_root)
+            rel_combo = os.path.relpath(combo_path, split_root)
+            meta.append({
+                "source_path": rec["path"],
+                "group_key": group_key,
+                "source_index": int(idx),
+                "crop_index": int(crop_idx),
+                "crop_bbox": [int(x0), int(y0), int(x1), int(y1)],
+                "crop_size": [int(crop_h), int(crop_w)],
+                "image": rel_img,
+                "mask": rel_mask,
+                "combo": rel_combo,
+            })
+            duplicate_groups[group_key]["items"].append({
+                "crop_index": int(crop_idx),
+                "image": rel_img,
+                "mask": rel_mask,
+                "combo": rel_combo,
+            })
+            sample_counter += 1
+            generated_here += 1
+
+        duplicate_groups[group_key]["actual_count"] = int(generated_here)
+        if generated_here != len(sizes):
+            mismatched.append((rec["path"], len(sizes), generated_here))
+
+    actual_total = len(meta)
+    expected_total = sum(info["expected_count"] for info in duplicate_groups.values())
+    if actual_total != expected_total:
+        raise RuntimeError(
+            f"[!] Split {split_name}: expected {expected_total} crops but generated {actual_total}."
+        )
+    if mismatched:
+        details = ", ".join([f"{os.path.basename(p)} (exp={exp}, got={got})" for p, exp, got in mismatched])
+        raise RuntimeError(f"[!] Split {split_name}: crop mismatch for: {details}")
+
+    def _count_png(path):
+        return len([f for f in os.listdir(path) if f.lower().endswith(".png")])
+
+    imgs_saved = _count_png(img_dir)
+    masks_saved = _count_png(mask_dir)
+    combos_saved = _count_png(combo_dir)
+    if not (imgs_saved == masks_saved == combos_saved == actual_total):
+        raise RuntimeError(
+            f"[!] Split {split_name}: file count mismatch (img={imgs_saved}, mask={masks_saved}, combo={combos_saved}, meta={actual_total})"
+        )
+
+    groups_serializable = []
+    for key, info in duplicate_groups.items():
+        items_sorted = sorted(info["items"], key=lambda x: x["crop_index"])
+        groups_serializable.append({
+            "group_key": key,
+            "source_path": info["source_path"],
+            "items": items_sorted,
+            "expected_count": int(info["expected_count"]),
+            "actual_count": int(info.get("actual_count", len(info["items"]))),
+        })
     meta_path = os.path.join(split_root, "meta.json")
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump({
             "classes": seg_index.classes,
             "items": meta,
+            "duplicates": groups_serializable,
+            "config": {
+                "split": split_name,
+                "target_size": int(size),
+                "norm_mode": norm_mode,
+                "crop": {
+                    "count": int(crop_count),
+                    "min_size": int(crop_min),
+                    "max_size": int(crop_max),
+                },
+                "augmentation_pipeline": tf_pipeline,
+                "expected_items": int(expected_total),
+                "actual_items": int(actual_total),
+            },
         }, f, ensure_ascii=False, indent=2)
 
 
@@ -304,10 +454,28 @@ def seg_prepare(args):
     tr_idx, va_idx = seg_index.split_by_images(val_ratio=args.val_ratio, seed=42)
     print(f"[i] подготовка train={len(tr_idx)}  val={len(va_idx)}")
 
+    train_crop_conf = {
+        "count": args.prep_train_crop_count,
+        "min_size": args.prep_train_crop_min,
+        "max_size": args.prep_train_crop_max,
+    }
+    val_crop_conf = {
+        "count": args.prep_val_crop_count,
+        "min_size": args.prep_val_crop_min,
+        "max_size": args.prep_val_crop_max,
+    }
+    test_crop_conf = {
+        "count": args.prep_test_crop_count,
+        "min_size": args.prep_test_crop_min,
+        "max_size": args.prep_test_crop_max,
+    }
+
     _export_seg_split(seg_index, tr_idx, "train", args.prep_out_dir, args.seg_img_size,
-                      norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha)
+                      norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha,
+                      crop_conf=train_crop_conf, rng=random.Random(args.prep_seed + 17))
     _export_seg_split(seg_index, va_idx, "val", args.prep_out_dir, args.seg_img_size,
-                      norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha)
+                      norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha,
+                      crop_conf=val_crop_conf, rng=random.Random(args.prep_seed + 31))
 
     if args.test_dir and os.path.isdir(args.test_dir):
         test_json = args.test_coco_json if args.test_coco_json else args.coco_json
@@ -321,7 +489,8 @@ def seg_prepare(args):
                 test_idxs = list(range(len(seg_index_test.items)))
                 print(f"[i] подготовка test={len(test_idxs)}")
                 _export_seg_split(seg_index_test, test_idxs, "test", args.prep_out_dir, args.seg_img_size,
-                                  norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha)
+                                  norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha,
+                                  crop_conf=test_crop_conf, rng=random.Random(args.prep_seed + 47))
         except Exception as exc:
             print(f"[!] не удалось подготовить тестовый набор: {exc}")
 
@@ -567,7 +736,8 @@ def clip_infer_on_dir(args, device):
     model.load_state_dict(sd["state_dict"])
     model.eval()
 
-    out_dir = args.out_dir or os.path.join(DEFAULT_OUT_DIR, "clip_infer")
+    base_out_dir = args.out_dir if args.out_dir else os.path.join(DEFAULT_OUT_DIR, "clip_infer")
+    out_dir = stamp_out_dir(base_out_dir)
     os.makedirs(out_dir, exist_ok=True)
     out_idx   = os.path.join(out_dir, "clip_idx");   os.makedirs(out_idx, exist_ok=True)
     out_color = os.path.join(out_dir, "clip_color"); os.makedirs(out_color, exist_ok=True)
@@ -701,8 +871,8 @@ def seg_infer(args, device, use_ovseg=False):
     model.load_state_dict(state_dict)
     model.eval()
 
-    out_dir = args.out_dir or os.path.join(DEFAULT_OUT_DIR, "seg_infer")
-    os.makedirs(out_dir, exist_ok=True)
+    base_out_dir = args.out_dir if args.out_dir else os.path.join(DEFAULT_OUT_DIR, "seg_infer")
+    out_dir = stamp_out_dir(base_out_dir)
     out_idx   = os.path.join(out_dir, "seg_idx");   os.makedirs(out_idx, exist_ok=True)
     out_color = os.path.join(out_dir, "seg_color"); os.makedirs(out_color, exist_ok=True)
     out_over  = os.path.join(out_dir, "seg_over");  os.makedirs(out_over, exist_ok=True)
@@ -750,12 +920,17 @@ def seg_infer(args, device, use_ovseg=False):
         base = os.path.splitext(os.path.basename(path))[0]
         idx_path   = os.path.join(out_idx,   base + ".png")
         color_path = os.path.join(out_color, base + ".png")
+        over_path  = os.path.join(out_over,  base + ".jpg")# классы 1..C
+
+        base = os.path.splitext(os.path.basename(path))[0]
+        idx_path   = os.path.join(out_idx,   base + ".png")
+        color_path = os.path.join(out_color, base + ".png")
         over_path  = os.path.join(out_over,  base + ".jpg")
 
-        C = num_classes
-        acc = np.zeros((C, H, W), np.float32)
-        for c in range(1, C+1):
-            acc[c-1] = (full == c).astype(np.float32)
+        total_channels = num_classes + 1
+        acc = np.zeros((total_channels, H, W), np.float32)
+        for c in range(total_channels):
+            acc[c] = (full == c).astype(np.float32)
         _, color_map = save_index_and_color_maps(acc, class_names, idx_path, color_path,
                                                  vis_thr=0.5, palette=LS_PALETTE, add_legend=args.vis_legend)
         save_overlay(src, color_map, over_path, alpha=args.vis_max_alpha, blur=args.vis_blur,

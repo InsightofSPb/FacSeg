@@ -79,13 +79,80 @@ def safe_path(images_dir, file_name):
         p = os.path.join(images_dir, file_name)
     return p if os.path.isfile(p) else None
 
+def _decode_rle_counts(counts, size):
+    """Decode an uncompressed RLE counts list into a mask."""
+    h, w = map(int, size)
+    total = h * w
+    flat = np.zeros(total, dtype=np.uint8)
+    idx = 0
+    val = 0
+    for c in counts:
+        c = abs(int(c))
+        end = min(idx + c, total)
+        if val == 1 and end > idx:
+            flat[idx:end] = 1
+        idx = end
+        if idx >= total:
+            break
+        val = 1 - val
+    return flat.reshape((h, w), order="F")
+
+
+def _decode_rle(segmentation, H, W):
+    size = segmentation.get("size", [H, W])
+    counts = segmentation.get("counts", [])
+    if isinstance(counts, list):
+        return _decode_rle_counts(counts, size)
+    if isinstance(counts, str):
+        # try to use pycocotools if available (supports compressed RLE)
+        try:
+            from pycocotools import mask as mask_utils  # type: ignore
+        except ImportError:
+            # fallback: decode compressed string per COCO spec
+            counts_bytes = counts.encode("utf-8")
+            nums = []
+            value = 0
+            shift = 0
+            for ch in counts_bytes:
+                ch -= 48
+                value |= (ch & 0x1F) << shift
+                shift += 5
+                if ch & 0x20:
+                    continue
+                if ch & 0x10:
+                    value = -value
+                nums.append(value)
+                value = 0
+                shift = 0
+            return _decode_rle_counts(nums, size)
+        else:
+            decoded = mask_utils.decode({"counts": counts, "size": size})
+            return decoded.astype(np.uint8)
+    return np.zeros((size[0], size[1]), np.uint8)
+
 def polygons_to_mask(segmentation, H, W, value=1):
     mask = np.zeros((H, W), np.uint8)
+    if segmentation is None:
+        return mask
     if isinstance(segmentation, list):
-        for poly in segmentation:
-            pts = np.array(poly, np.float32).reshape(-1, 2)
+        if not segmentation:
+            return mask
+        if isinstance(segmentation[0], (list, tuple)):
+            for poly in segmentation:
+                pts = np.array(poly, np.float32).reshape(-1, 2)
+                pts = np.round(pts).astype(np.int32)
+                if len(pts) >= 3:
+                    cv2.fillPoly(mask, [pts], value)
+        elif isinstance(segmentation[0], dict):
+            for seg in segmentation:
+                mask = np.maximum(mask, _decode_rle(seg, H, W) * value)
+        else:
+            pts = np.array(segmentation, np.float32).reshape(-1, 2)
             pts = np.round(pts).astype(np.int32)
-            cv2.fillPoly(mask, [pts], value)
+            if len(pts) >= 3:
+                cv2.fillPoly(mask, [pts], value)
+    elif isinstance(segmentation, dict):
+        mask = np.maximum(mask, _decode_rle(segmentation, H, W) * value)
     return mask
 
 def format_int(n: int) -> str:
@@ -163,16 +230,44 @@ def make_cosine_kernel(ts: int):
     k /= k.max()
     return k
 
-def save_index_and_color_maps(acc_C_hw, class_names, idx_path, color_path, vis_thr=0.5, palette=LS_PALETTE, add_legend=True):
-    C, H, W = acc_C_hw.shape
-    idx = acc_C_hw.argmax(0).astype(np.uint8) + 1  # 1..C
+def save_index_and_color_maps(acc_C_hw, class_names, idx_path, color_path,
+                              vis_thr=0.5, palette=LS_PALETTE, add_legend=True):
+    if isinstance(acc_C_hw, torch.Tensor):
+        acc = acc_C_hw.detach().cpu().numpy()
+    else:
+        acc = np.asarray(acc_C_hw)
+
+    if acc.ndim != 3:
+        raise ValueError("acc_C_hw must have shape (C, H, W)")
+
+    C, H, W = acc.shape
+    idx = acc.argmax(0).astype(np.uint8)
+    scores = acc.max(0)
+
+    has_background = (C == len(class_names) + 1)
+
+    if vis_thr is not None:
+        if has_background:
+            idx[scores < vis_thr] = 0
+        scores_mask = (scores >= vis_thr)
+    else:
+        scores_mask = None
+
     color = np.zeros((H, W, 3), np.uint8)
-    for c, name in enumerate(class_names, start=1):
-        color[idx == c] = hex_to_bgr(palette.get(name, "#FF00FF"))
+    start_channel = 1 if has_background else 0
+    max_classes = min(len(class_names), C - start_channel)
+
+    for offset, name in enumerate(class_names[:max_classes], start=start_channel):
+        mask = (idx == offset)
+        if scores_mask is not None:
+            mask = np.logical_and(mask, scores_mask)
+        if not np.any(mask):
+            continue
+        color[mask] = hex_to_bgr(palette.get(name, "#FF00FF"))
+
     cv2.imwrite(idx_path, idx)
     cv2.imwrite(color_path, color)
     return idx, color
-
 def _draw_legend(canvas, class_names, palette, alpha_bg=0.6):
     h, w = canvas.shape[:2]
     pad, sw, sh = 8, 22, 18
