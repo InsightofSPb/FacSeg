@@ -13,20 +13,28 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from utils.utils import *
-from datasets.datasets import TileIndex, TilesDataset, SegIndex, SegDataset
+from datasets.datasets import TileIndex, TilesDataset, SegIndex, SegDataset, _build_tf, load_coco_class_order
 from model_zoo.models import CLIPHead, init_head_from_text, OvSegModel, get_seg_model
 
 torch.set_float32_matmul_precision('high')
 
 
+DEFAULT_IMAGES_DIR = "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/images"
+DEFAULT_COCO_JSON = "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/annotations/result_coco.json"
+DEFAULT_TEST_DIR = "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test"
+DEFAULT_OUT_DIR = "/home/sasha/Facade_segmentation/results"
+DEFAULT_PREPARED_DIR = "/home/sasha/Facade_segmentation/prepared"
+
+
 def parse_args():
     ap = argparse.ArgumentParser("Facade defects (CLIP tiles + OVSeg + torchvision)")
     # common
-    ap.add_argument("--mode", choices=["infer","clip_train","seg_train","seg_infer","ovseg_train","ovseg_infer"], default="infer")
-    ap.add_argument("--images_dir", type=str, default="")
-    ap.add_argument("--coco_json",  type=str, default="")
-    ap.add_argument("--test_dir",   type=str, default="")
-    ap.add_argument("--out_dir",    type=str, default="results")
+    ap.add_argument("--mode", choices=["infer","clip_train","seg_train","seg_infer","ovseg_train","ovseg_infer","seg_prepare"], default="infer")
+    ap.add_argument("--images_dir", type=str, default=DEFAULT_IMAGES_DIR)
+    ap.add_argument("--coco_json",  type=str, default=DEFAULT_COCO_JSON)
+    ap.add_argument("--test_dir",   type=str, default=DEFAULT_TEST_DIR)
+    ap.add_argument("--test_coco_json", type=str, default=DEFAULT_COCO_JSON)
+    ap.add_argument("--out_dir",    type=str, default=DEFAULT_OUT_DIR)
     ap.add_argument("--compile", action="store_true")
     ap.add_argument("--compile_mode", default="default")
     ap.add_argument("--compile_backend", default=None)
@@ -75,8 +83,18 @@ def parse_args():
                     help="Доля train для оценки mIoU/F1 после эпохи (0..1, 0=пропустить, 1=всё)")
     # checkpoints
     ap.add_argument("--ckpt", type=str, default="", help="Path to load checkpoint for infer / resume")
+    ap.add_argument("--prep_out_dir", type=str, default=DEFAULT_PREPARED_DIR,
+                    help="Куда выгружать подготовленные датасеты (seg_prepare)")
+    ap.add_argument("--prep_norm_mode", choices=["clip", "imagenet"], default="imagenet",
+                    help="Какой набор аугментаций использовать при подготовке (влияет на нормировку при трене)")
+    ap.add_argument("--prep_seed", type=int, default=42, help="Сид для аугментаций в seg_prepare")
 
     args = ap.parse_args()
+
+    for attr in ["images_dir", "coco_json", "test_dir", "test_coco_json", "out_dir", "prep_out_dir", "class_aliases", "ckpt"]:
+        val = getattr(args, attr, "")
+        if isinstance(val, str):
+            setattr(args, attr, os.path.expanduser(val.strip()))
 
     if args.dump_aliases_template:
         template = {
@@ -111,6 +129,203 @@ def duplicate_positive_indices(index: TileIndex, indices, dup_factor: int):
         else:
             out.append(i)
     return out
+
+
+class TopKCheckpointManager:
+    def __init__(self, directory: str, prefix: str, k: int = 5):
+        self.directory = directory
+        self.prefix = prefix
+        self.k = k
+        self._saved = []  # list of (loss, path)
+
+    def _format_metrics_suffix(self, metrics: dict, loss: float) -> str:
+        parts = [
+            f"loss_{loss:.4f}",
+        ]
+        order = [
+            ("pixel_acc", "pixelacc"),
+            ("miou", "miou"),
+            ("f1_macro", "f1"),
+        ]
+        for key, tag in order:
+            if key in metrics and metrics[key] is not None:
+                parts.append(f"{tag}_{metrics[key]:.4f}")
+        return "_".join(parts)
+
+    def save(self, state_dict: dict, epoch: int, loss: float, metrics: dict, extra=None):
+        suffix = self._format_metrics_suffix(metrics, loss)
+        fname = f"{self.prefix}_ep{epoch:03d}_{suffix}.pt"
+        path = os.path.join(self.directory, fname)
+        payload = {
+            "state_dict": state_dict,
+            "epoch": int(epoch),
+            "val_loss": float(loss),
+            "metrics": metrics,
+        }
+        if extra:
+            for key, value in extra.items():
+                if value is not None:
+                    payload[key] = value
+        torch.save(payload, path)
+        self._saved.append((loss, path))
+        self._saved.sort(key=lambda x: x[0])
+        while len(self._saved) > self.k:
+            _, drop_path = self._saved.pop(-1)
+            try:
+                os.remove(drop_path)
+            except OSError:
+                pass
+
+
+def _infer_num_classes_from_state_dict(state_dict):
+    min_out = None
+    for key, tensor in state_dict.items():
+        if not hasattr(tensor, "shape"):
+            continue
+        if getattr(tensor, "ndim", 0) == 0:
+            continue
+        if not key.endswith("weight"):
+            continue
+        bias_key = key[:-6] + "bias"
+        if bias_key not in state_dict:
+            continue
+        out_ch = int(tensor.shape[0])
+        if out_ch <= 1:
+            continue
+        if min_out is None or out_ch < min_out:
+            min_out = out_ch
+    if min_out is None:
+        return None
+    return max(0, min_out - 1)
+
+
+def _default_class_order(num_classes):
+    base = [DEFAULT_CATEGORIES[k] for k in sorted(DEFAULT_CATEGORIES.keys())]
+    return base[:num_classes]
+
+
+def evaluate_segmentation_full(model, dl, device, criterion):
+    model.eval()
+    losses = []
+    hist = None
+    K = None
+    with torch.no_grad():
+        for x, y, _ in dl:
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True).long()
+            out = model(x)["out"]
+            if out.shape[-2:] != y.shape[-2:]:
+                out = F.interpolate(out, size=y.shape[-2:], mode="bilinear", align_corners=False)
+            loss = criterion(out, y)
+            losses.append(float(loss.item()))
+            pred = out.argmax(1)
+            if K is None:
+                K = out.shape[1]
+            h = seg_hist_np(pred.cpu().numpy(), y.cpu().numpy(), K)
+            hist = h if hist is None else (hist + h)
+    avg_loss = float(np.mean(losses)) if losses else float("inf")
+    metrics = seg_metrics_from_hist(hist, ignore_background=True) if hist is not None else {
+        "pixel_acc": 0.0,
+        "miou": 0.0,
+        "f1_macro": 0.0,
+    }
+    return avg_loss, metrics, K
+
+
+def _mask_to_color(mask, class_names):
+    color = np.zeros((mask.shape[0], mask.shape[1], 3), np.uint8)
+    for idx, name in enumerate(class_names, start=1):
+        color[mask == idx] = hex_to_bgr(LS_PALETTE.get(name, "#FF00FF"))
+    return color
+
+
+def _export_seg_split(seg_index: SegIndex, idxs, split_name: str, out_root: str,
+                      size: int, norm_mode: str, alpha: float = 0.6):
+    split_root = os.path.join(out_root, split_name)
+    img_dir = os.path.join(split_root, "images")
+    mask_dir = os.path.join(split_root, "masks")
+    combo_dir = os.path.join(split_root, "combo")
+    os.makedirs(img_dir, exist_ok=True)
+    os.makedirs(mask_dir, exist_ok=True)
+    os.makedirs(combo_dir, exist_ok=True)
+
+    tf = _build_tf(train=(split_name == "train"), size=size, norm_mode=norm_mode, include_normalize=False)
+    meta = []
+    for i, idx in enumerate(tqdm(idxs, desc=f"Prepare {split_name}", leave=False)):
+        rec = seg_index.items[idx]
+        img_bgr = cv2.imread(rec["path"], cv2.IMREAD_COLOR)
+        if img_bgr is None:
+            continue
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        tfed = tf(image=img_rgb, mask=rec["mask"])
+        img_tf = tfed["image"]
+        mask_tf = tfed["mask"].astype(np.uint8)
+
+        base = os.path.splitext(os.path.basename(rec["path"]))[0]
+        safe_base = base.replace(" ", "_")
+        name = f"{i:05d}_{safe_base}"
+
+        img_path = os.path.join(img_dir, name + ".png")
+        mask_path = os.path.join(mask_dir, name + ".png")
+        combo_path = os.path.join(combo_dir, name + ".png")
+
+        cv2.imwrite(img_path, cv2.cvtColor(img_tf, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_PNG_COMPRESSION, 3])
+        cv2.imwrite(mask_path, mask_tf, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+        color_map = _mask_to_color(mask_tf, seg_index.classes)
+        save_overlay(img_tf, color_map, combo_path, alpha=alpha, blur=0,
+                     add_legend=True, class_names=seg_index.classes, palette=LS_PALETTE)
+
+        meta.append({
+            "source_path": rec["path"],
+            "image": os.path.relpath(img_path, split_root),
+            "mask": os.path.relpath(mask_path, split_root),
+            "combo": os.path.relpath(combo_path, split_root),
+        })
+
+    meta_path = os.path.join(split_root, "meta.json")
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "classes": seg_index.classes,
+            "items": meta,
+        }, f, ensure_ascii=False, indent=2)
+
+
+def seg_prepare(args):
+    random.seed(args.prep_seed)
+    np.random.seed(args.prep_seed)
+    torch.manual_seed(args.prep_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.prep_seed)
+
+    os.makedirs(args.prep_out_dir, exist_ok=True)
+    print(f"[i] подготовленный датасет будет сохранён в: {args.prep_out_dir}")
+
+    seg_index = SegIndex(args.images_dir, args.coco_json, class_aliases=args.class_aliases)
+    tr_idx, va_idx = seg_index.split_by_images(val_ratio=args.val_ratio, seed=42)
+    print(f"[i] подготовка train={len(tr_idx)}  val={len(va_idx)}")
+
+    _export_seg_split(seg_index, tr_idx, "train", args.prep_out_dir, args.seg_img_size,
+                      norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha)
+    _export_seg_split(seg_index, va_idx, "val", args.prep_out_dir, args.seg_img_size,
+                      norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha)
+
+    if args.test_dir and os.path.isdir(args.test_dir):
+        test_json = args.test_coco_json if args.test_coco_json else args.coco_json
+        try:
+            if os.path.abspath(args.test_dir) == os.path.abspath(args.images_dir) and \
+               os.path.abspath(test_json) == os.path.abspath(args.coco_json):
+                # test совпадает с train — не дублируем
+                pass
+            else:
+                seg_index_test = SegIndex(args.test_dir, test_json, class_aliases=args.class_aliases)
+                test_idxs = list(range(len(seg_index_test.items)))
+                print(f"[i] подготовка test={len(test_idxs)}")
+                _export_seg_split(seg_index_test, test_idxs, "test", args.prep_out_dir, args.seg_img_size,
+                                  norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha)
+        except Exception as exc:
+            print(f"[!] не удалось подготовить тестовый набор: {exc}")
+
+    print("[OK] подготовка датасетов завершена")
 
 
 # ---------- train loops ----------
@@ -203,7 +418,9 @@ def seg_train(args, device):
     criterion = nn.CrossEntropyLoss(ignore_index=255)
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=3e-4, weight_decay=1e-4)
 
-    os.makedirs(os.path.join(out_dir, "checkpoints"), exist_ok=True)
+    ckpt_dir = os.path.join(out_dir, "checkpoints")
+    os.makedirs(ckpt_dir, exist_ok=True)
+    ckpt_mgr = TopKCheckpointManager(ckpt_dir, prefix="seg", k=5)
 
     for ep in range(1, args.epochs+1):
         model.train(); losses = []; seen = 0
@@ -219,9 +436,8 @@ def seg_train(args, device):
         print(f"[ep {ep:03d}] train_loss={avg_loss:.4f}")
 
         # validation metrics
-        hist_val, K = _eval_segmentation(model, dl_va, device)
-        m = seg_metrics_from_hist(hist_val, ignore_background=True)
-        print(f"[ep {ep:03d}] val: pixel_acc={m['pixel_acc']:.4f}  mIoU={m['miou']:.4f}  F1={m['f1_macro']:.4f}")
+        val_loss, m, K = evaluate_segmentation_full(model, dl_va, device, criterion)
+        print(f"[ep {ep:03d}] val: loss={val_loss:.4f}  pixel_acc={m['pixel_acc']:.4f}  mIoU={m['miou']:.4f}  F1={m['f1_macro']:.4f}")
 
         # optional train metrics on a fraction
         frac = max(0.0, min(1.0, getattr(args, "train_miou_ratio", 0.0)))
@@ -244,7 +460,7 @@ def seg_train(args, device):
             tag = "all" if frac >= 1.0 else f"{int(frac*100)}%"
             print(f"[ep {ep:03d}] train[{tag}]: mIoU={mt['miou']:.4f}  F1={mt['f1_macro']:.4f}")
 
-        torch.save({"state_dict": model.state_dict()}, os.path.join(out_dir, "checkpoints", f"seg_ep{ep:03d}.pt"))
+        ckpt_mgr.save(model.state_dict(), ep, val_loss, m, extra={"classes": seg_index.classes})
 
 
 def ovseg_train(args, device):
@@ -291,7 +507,9 @@ def ovseg_train(args, device):
     )
     criterion = nn.CrossEntropyLoss(ignore_index=255)
 
-    os.makedirs(os.path.join(out_dir, "checkpoints"), exist_ok=True)
+    ckpt_dir = os.path.join(out_dir, "checkpoints")
+    os.makedirs(ckpt_dir, exist_ok=True)
+    ckpt_mgr = TopKCheckpointManager(ckpt_dir, prefix="ovseg", k=5)
 
     for ep in range(1, args.epochs+1):
         model.train(); losses = []; seen = 0
@@ -307,9 +525,8 @@ def ovseg_train(args, device):
         print(f"[ep {ep:03d}] train_loss={avg_loss:.4f}")
 
         # validation metrics
-        hist_val, K = _eval_segmentation(model, dl_va, device)
-        m = seg_metrics_from_hist(hist_val, ignore_background=True)
-        print(f"[ep {ep:03d}] val: pixel_acc={m['pixel_acc']:.4f}  mIoU={m['miou']:.4f}  F1={m['f1_macro']:.4f}")
+        val_loss, m, K = evaluate_segmentation_full(model, dl_va, device, criterion)
+        print(f"[ep {ep:03d}] val: loss={val_loss:.4f}  pixel_acc={m['pixel_acc']:.4f}  mIoU={m['miou']:.4f}  F1={m['f1_macro']:.4f}")
 
         # optional train metrics on a fraction
         frac = max(0.0, min(1.0, getattr(args, "train_miou_ratio", 0.0)))
@@ -332,7 +549,7 @@ def ovseg_train(args, device):
             tag = "all" if frac >= 1.0 else f"{int(frac*100)}%"
             print(f"[ep {ep:03d}] train[{tag}]: mIoU={mt['miou']:.4f}  F1={mt['f1_macro']:.4f}")
 
-        torch.save({"state_dict": model.state_dict()}, os.path.join(out_dir, "checkpoints", f"ovseg_ep{ep:03d}.pt"))
+        ckpt_mgr.save(model.state_dict(), ep, val_loss, m, extra={"classes": seg_index.classes})
 
 
 # ---------- inference ----------
@@ -350,11 +567,12 @@ def clip_infer_on_dir(args, device):
     model.load_state_dict(sd["state_dict"])
     model.eval()
 
-    os.makedirs(args.out_dir, exist_ok=True)
-    out_idx   = os.path.join(args.out_dir, "clip_idx");   os.makedirs(out_idx, exist_ok=True)
-    out_color = os.path.join(args.out_dir, "clip_color"); os.makedirs(out_color, exist_ok=True)
-    out_over  = os.path.join(args.out_dir, "clip_over");  os.makedirs(out_over, exist_ok=True)
-    out_comp  = os.path.join(args.out_dir, "clip_comp");  os.makedirs(out_comp, exist_ok=True)
+    out_dir = args.out_dir or os.path.join(DEFAULT_OUT_DIR, "clip_infer")
+    os.makedirs(out_dir, exist_ok=True)
+    out_idx   = os.path.join(out_dir, "clip_idx");   os.makedirs(out_idx, exist_ok=True)
+    out_color = os.path.join(out_dir, "clip_color"); os.makedirs(out_color, exist_ok=True)
+    out_over  = os.path.join(out_dir, "clip_over");  os.makedirs(out_over, exist_ok=True)
+    out_comp  = os.path.join(out_dir, "clip_comp");  os.makedirs(out_comp, exist_ok=True)
 
     class_names = index.classes
     kernel_full = make_cosine_kernel(args.tile_size)
@@ -424,26 +642,70 @@ def clip_infer_on_dir(args, device):
 
 def seg_infer(args, device, use_ovseg=False):
     assert args.ckpt, "--ckpt is required for seg_infer/ovseg_infer"
-    seg_index = SegIndex(args.images_dir if args.images_dir else args.test_dir,
-                         args.coco_json, class_aliases=args.class_aliases)
+    payload = torch.load(args.ckpt, map_location="cpu")
+    if isinstance(payload, dict) and "state_dict" in payload:
+        state_dict = payload["state_dict"]
+    else:
+        state_dict = payload
+
+    class_names = None
+    num_classes = None
+    if isinstance(payload, dict):
+        ckpt_classes = payload.get("classes")
+        if ckpt_classes:
+            class_names = list(ckpt_classes)
+            num_classes = len(class_names)
+
+    seg_index = None
+    if class_names is None:
+        try:
+            seg_index = SegIndex(args.images_dir if args.images_dir else args.test_dir,
+                                 args.coco_json, class_aliases=args.class_aliases)
+            class_names = seg_index.classes
+            num_classes = seg_index.num_classes
+        except AssertionError as exc:
+            print(f"[!] cannot build SegIndex from dataset: {exc}")
+        except FileNotFoundError as exc:
+            print(f"[!] cannot build SegIndex from dataset: {exc}")
+        except Exception as exc:
+            print(f"[!] cannot build SegIndex from dataset ({type(exc).__name__}): {exc}")
+
+    if class_names is None:
+        try:
+            coco_classes = load_coco_class_order(args.coco_json, args.class_aliases)
+            if coco_classes:
+                class_names = coco_classes
+                num_classes = len(class_names)
+                print("[i] class order restored from COCO categories")
+        except Exception as exc:
+            print(f"[!] failed to load class order from COCO: {exc}")
+
+    if num_classes is None:
+        num_classes = _infer_num_classes_from_state_dict(state_dict)
+        if num_classes:
+            print(f"[i] inferred {num_classes} classes from checkpoint weights")
+
+    if num_classes is None or num_classes <= 0:
+        raise RuntimeError("Unable to determine number of segmentation classes for inference.")
+
+    if class_names is None or len(class_names) != num_classes:
+        class_names = _default_class_order(num_classes)
+        print("[i] falling back to default class names order")
 
     if use_ovseg:
-        model = OvSegModel(args.ovseg_model, args.ovseg_ckpt, seg_index.num_classes,
+        model = OvSegModel(args.ovseg_model, args.ovseg_ckpt, num_classes,
                            freeze_backbone=False, decoder_channels=args.ovseg_decoder_ch,
                            decoder_dropout=args.ovseg_decoder_dropout, device=device).to(device)
     else:
-        model = get_seg_model(args.seg_model, seg_index.num_classes, weights_tag=None).to(device)
-    sd = torch.load(args.ckpt, map_location="cpu")
-    model.load_state_dict(sd["state_dict"])
+        model = get_seg_model(args.seg_model, num_classes, weights_tag=None).to(device)
+    model.load_state_dict(state_dict)
     model.eval()
 
-    os.makedirs(args.out_dir, exist_ok=True)
-    out_idx   = os.path.join(args.out_dir, "seg_idx");   os.makedirs(out_idx, exist_ok=True)
-    out_color = os.path.join(args.out_dir, "seg_color"); os.makedirs(out_color, exist_ok=True)
-    out_over  = os.path.join(args.out_dir, "seg_over");  os.makedirs(out_over, exist_ok=True)
-
-    # имена классов в порядке каналов (1..C — классы, 0 — фон)
-    class_names = seg_index.classes
+    out_dir = args.out_dir or os.path.join(DEFAULT_OUT_DIR, "seg_infer")
+    os.makedirs(out_dir, exist_ok=True)
+    out_idx   = os.path.join(out_dir, "seg_idx");   os.makedirs(out_idx, exist_ok=True)
+    out_color = os.path.join(out_dir, "seg_color"); os.makedirs(out_color, exist_ok=True)
+    out_over  = os.path.join(out_dir, "seg_over");  os.makedirs(out_over, exist_ok=True)
 
     test_dir = args.test_dir if args.test_dir else args.images_dir
     img_paths = []
@@ -490,7 +752,7 @@ def seg_infer(args, device, use_ovseg=False):
         color_path = os.path.join(out_color, base + ".png")
         over_path  = os.path.join(out_over,  base + ".jpg")
 
-        C = seg_index.num_classes
+        C = num_classes
         acc = np.zeros((C, H, W), np.float32)
         for c in range(1, C+1):
             acc[c-1] = (full == c).astype(np.float32)
@@ -516,6 +778,8 @@ def main():
         ovseg_train(args, device); return
     if args.mode == "ovseg_infer":
         seg_infer(args, device, use_ovseg=True); return
+    if args.mode == "seg_prepare":
+        seg_prepare(args); return
 
 
 if __name__ == "__main__":
