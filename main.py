@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from utils.utils import *
-from datasets.datasets import TileIndex, TilesDataset, SegIndex, SegDataset, _build_tf
+from datasets.datasets import TileIndex, TilesDataset, SegIndex, SegDataset, _build_tf, load_coco_class_order
 from model_zoo.models import CLIPHead, init_head_from_text, OvSegModel, get_seg_model
 
 torch.set_float32_matmul_precision('high')
@@ -152,11 +152,21 @@ class TopKCheckpointManager:
                 parts.append(f"{tag}_{metrics[key]:.4f}")
         return "_".join(parts)
 
-    def save(self, state_dict: dict, epoch: int, loss: float, metrics: dict):
+    def save(self, state_dict: dict, epoch: int, loss: float, metrics: dict, extra=None):
         suffix = self._format_metrics_suffix(metrics, loss)
         fname = f"{self.prefix}_ep{epoch:03d}_{suffix}.pt"
         path = os.path.join(self.directory, fname)
-        torch.save({"state_dict": state_dict}, path)
+        payload = {
+            "state_dict": state_dict,
+            "epoch": int(epoch),
+            "val_loss": float(loss),
+            "metrics": metrics,
+        }
+        if extra:
+            for key, value in extra.items():
+                if value is not None:
+                    payload[key] = value
+        torch.save(payload, path)
         self._saved.append((loss, path))
         self._saved.sort(key=lambda x: x[0])
         while len(self._saved) > self.k:
@@ -165,6 +175,33 @@ class TopKCheckpointManager:
                 os.remove(drop_path)
             except OSError:
                 pass
+
+
+def _infer_num_classes_from_state_dict(state_dict):
+    min_out = None
+    for key, tensor in state_dict.items():
+        if not hasattr(tensor, "shape"):
+            continue
+        if getattr(tensor, "ndim", 0) == 0:
+            continue
+        if not key.endswith("weight"):
+            continue
+        bias_key = key[:-6] + "bias"
+        if bias_key not in state_dict:
+            continue
+        out_ch = int(tensor.shape[0])
+        if out_ch <= 1:
+            continue
+        if min_out is None or out_ch < min_out:
+            min_out = out_ch
+    if min_out is None:
+        return None
+    return max(0, min_out - 1)
+
+
+def _default_class_order(num_classes):
+    base = [DEFAULT_CATEGORIES[k] for k in sorted(DEFAULT_CATEGORIES.keys())]
+    return base[:num_classes]
 
 
 def evaluate_segmentation_full(model, dl, device, criterion):
@@ -423,7 +460,7 @@ def seg_train(args, device):
             tag = "all" if frac >= 1.0 else f"{int(frac*100)}%"
             print(f"[ep {ep:03d}] train[{tag}]: mIoU={mt['miou']:.4f}  F1={mt['f1_macro']:.4f}")
 
-        ckpt_mgr.save(model.state_dict(), ep, val_loss, m)
+        ckpt_mgr.save(model.state_dict(), ep, val_loss, m, extra={"classes": seg_index.classes})
 
 
 def ovseg_train(args, device):
@@ -512,7 +549,7 @@ def ovseg_train(args, device):
             tag = "all" if frac >= 1.0 else f"{int(frac*100)}%"
             print(f"[ep {ep:03d}] train[{tag}]: mIoU={mt['miou']:.4f}  F1={mt['f1_macro']:.4f}")
 
-        ckpt_mgr.save(model.state_dict(), ep, val_loss, m)
+        ckpt_mgr.save(model.state_dict(), ep, val_loss, m, extra={"classes": seg_index.classes})
 
 
 # ---------- inference ----------
@@ -605,17 +642,63 @@ def clip_infer_on_dir(args, device):
 
 def seg_infer(args, device, use_ovseg=False):
     assert args.ckpt, "--ckpt is required for seg_infer/ovseg_infer"
-    seg_index = SegIndex(args.images_dir if args.images_dir else args.test_dir,
-                         args.coco_json, class_aliases=args.class_aliases)
+    payload = torch.load(args.ckpt, map_location="cpu")
+    if isinstance(payload, dict) and "state_dict" in payload:
+        state_dict = payload["state_dict"]
+    else:
+        state_dict = payload
+
+    class_names = None
+    num_classes = None
+    if isinstance(payload, dict):
+        ckpt_classes = payload.get("classes")
+        if ckpt_classes:
+            class_names = list(ckpt_classes)
+            num_classes = len(class_names)
+
+    seg_index = None
+    if class_names is None:
+        try:
+            seg_index = SegIndex(args.images_dir if args.images_dir else args.test_dir,
+                                 args.coco_json, class_aliases=args.class_aliases)
+            class_names = seg_index.classes
+            num_classes = seg_index.num_classes
+        except AssertionError as exc:
+            print(f"[!] cannot build SegIndex from dataset: {exc}")
+        except FileNotFoundError as exc:
+            print(f"[!] cannot build SegIndex from dataset: {exc}")
+        except Exception as exc:
+            print(f"[!] cannot build SegIndex from dataset ({type(exc).__name__}): {exc}")
+
+    if class_names is None:
+        try:
+            coco_classes = load_coco_class_order(args.coco_json, args.class_aliases)
+            if coco_classes:
+                class_names = coco_classes
+                num_classes = len(class_names)
+                print("[i] class order restored from COCO categories")
+        except Exception as exc:
+            print(f"[!] failed to load class order from COCO: {exc}")
+
+    if num_classes is None:
+        num_classes = _infer_num_classes_from_state_dict(state_dict)
+        if num_classes:
+            print(f"[i] inferred {num_classes} classes from checkpoint weights")
+
+    if num_classes is None or num_classes <= 0:
+        raise RuntimeError("Unable to determine number of segmentation classes for inference.")
+
+    if class_names is None or len(class_names) != num_classes:
+        class_names = _default_class_order(num_classes)
+        print("[i] falling back to default class names order")
 
     if use_ovseg:
-        model = OvSegModel(args.ovseg_model, args.ovseg_ckpt, seg_index.num_classes,
+        model = OvSegModel(args.ovseg_model, args.ovseg_ckpt, num_classes,
                            freeze_backbone=False, decoder_channels=args.ovseg_decoder_ch,
                            decoder_dropout=args.ovseg_decoder_dropout, device=device).to(device)
     else:
-        model = get_seg_model(args.seg_model, seg_index.num_classes, weights_tag=None).to(device)
-    sd = torch.load(args.ckpt, map_location="cpu")
-    model.load_state_dict(sd["state_dict"])
+        model = get_seg_model(args.seg_model, num_classes, weights_tag=None).to(device)
+    model.load_state_dict(state_dict)
     model.eval()
 
     out_dir = args.out_dir or os.path.join(DEFAULT_OUT_DIR, "seg_infer")
@@ -623,9 +706,6 @@ def seg_infer(args, device, use_ovseg=False):
     out_idx   = os.path.join(out_dir, "seg_idx");   os.makedirs(out_idx, exist_ok=True)
     out_color = os.path.join(out_dir, "seg_color"); os.makedirs(out_color, exist_ok=True)
     out_over  = os.path.join(out_dir, "seg_over");  os.makedirs(out_over, exist_ok=True)
-
-    # имена классов в порядке каналов (1..C — классы, 0 — фон)
-    class_names = seg_index.classes
 
     test_dir = args.test_dir if args.test_dir else args.images_dir
     img_paths = []
@@ -672,7 +752,7 @@ def seg_infer(args, device, use_ovseg=False):
         color_path = os.path.join(out_color, base + ".png")
         over_path  = os.path.join(out_over,  base + ".jpg")
 
-        C = seg_index.num_classes
+        C = num_classes
         acc = np.zeros((C, H, W), np.float32)
         for c in range(1, C+1):
             acc[c-1] = (full == c).astype(np.float32)

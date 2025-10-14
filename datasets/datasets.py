@@ -16,6 +16,35 @@ from utils.utils import (
     polygons_to_mask
 )
 
+
+def _resolve_coco_classes(coco: dict, aliases_tbl=None):
+    """Return canonical class order and mapping from COCO ids -> canonical names."""
+    aliases_tbl = aliases_tbl or {}
+
+    id_to_name = {c["id"]: c.get("name", f"cat_{c['id']}") for c in coco.get("categories", [])}
+    id_to_norm, present_names = remap_id_to_canonical(id_to_name, aliases_tbl, fallback=DEFAULT_CATEGORIES)
+    norm2canon = {_norm_name(v): v for v in DEFAULT_CATEGORIES.values()}
+
+    coco_id_to_canon = {}
+    for cid, nrm in id_to_norm.items():
+        if nrm in present_names and nrm in norm2canon:
+            coco_id_to_canon[cid] = norm2canon[nrm]
+
+    canon_order = [
+        DEFAULT_CATEGORIES[k] for k in sorted(DEFAULT_CATEGORIES.keys())
+        if DEFAULT_CATEGORIES[k] in coco_id_to_canon.values()
+    ]
+    return canon_order, coco_id_to_canon
+
+
+def load_coco_class_order(coco_json: str, class_aliases: str = ""):
+    """Load ordered canonical class list from a COCO json file."""
+    with open(coco_json, "r", encoding="utf-8") as f:
+        coco = json.load(f)
+    aliases_tbl = load_aliases_json(class_aliases) if class_aliases else {}
+    classes, _ = _resolve_coco_classes(coco, aliases_tbl)
+    return classes
+
 # ----------------------------- helpers -----------------------------
 
 def _resolve_image_path(images_dir, im):
@@ -205,17 +234,7 @@ class SegIndex:
         with open(coco_json, "r", encoding="utf-8") as f:
             coco = json.load(f)
 
-        # categories -> canonical
-        id_to_name = {c["id"]: c["name"] for c in coco.get("categories", [])}
-        id_to_norm, present_names = remap_id_to_canonical(id_to_name, self.aliases_tbl, fallback=DEFAULT_CATEGORIES)
-        norm2canon = {_norm_name(v): v for v in DEFAULT_CATEGORIES.values()}
-        coco_id_to_canon = {}
-        for cid, nrm in id_to_norm.items():
-            if nrm in present_names and nrm in norm2canon:
-                coco_id_to_canon[cid] = norm2canon[nrm]
-
-        canon_order = [DEFAULT_CATEGORIES[k] for k in sorted(DEFAULT_CATEGORIES.keys())
-                       if DEFAULT_CATEGORIES[k] in coco_id_to_canon.values()]
+        canon_order, coco_id_to_canon = _resolve_coco_classes(coco, self.aliases_tbl)
         self.class_ids = [cid for cid, nm in coco_id_to_canon.items() if nm in set(canon_order)]
         self.classes = canon_order
         self.C = len(self.classes)
