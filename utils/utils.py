@@ -207,3 +207,62 @@ def save_composite_overlay(src_rgb, acc_C_hw, class_names, out_path,
         color[m] = hex_to_bgr(palette.get(name, "#FF00FF"))
     save_overlay(src_rgb, color, out_path, alpha=alpha, blur=blur,
                  add_legend=add_legend, class_names=class_names, palette=palette)
+
+
+def seg_hist_np(pred, target, num_classes: int, ignore_index: int = 255):
+    """
+    Быстрый confusion-matrix для сегментации.
+    pred, target: одинаковой формы (H,W) или (N,) с int-метками [0..K-1]
+    Возвращает матрицу KxK, где [gt, pred].
+    Совместимо с NumPy<2.0 (без dtype в bincount).
+    """
+    import numpy as np
+
+    p = np.asarray(pred).reshape(-1).astype(np.int64)
+    t = np.asarray(target).reshape(-1).astype(np.int64)
+
+    # валидные пиксели: в диапазоне классов и не равны ignore_index
+    mask = (t >= 0) & (t < num_classes)
+    if ignore_index is not None:
+        mask &= (t != ignore_index)
+
+    # сворачиваем пары (gt, pred) в одно число и считаем частоты
+    comb = num_classes * t[mask] + p[mask]
+    hist = np.bincount(comb, minlength=num_classes * num_classes)  # без dtype
+    hist = hist.reshape(num_classes, num_classes).astype(np.int64, copy=False)
+    return hist
+
+def seg_metrics_from_hist(hist: np.ndarray, ignore_background: bool = True):
+    """
+    Из confusion matrix считает:
+      - pixel_acc (по всем классам, включая фон)
+      - per-class IoU, mIoU
+      - per-class F1, macro-F1
+    Если ignore_background=True — IoU/F1 считаются по классам 1..K-1.
+    """
+    eps = 1e-7
+    K = hist.shape[0]
+    acc = float(hist.trace()) / float(hist.sum() + eps)
+
+    if ignore_background and K > 1:
+        h = hist[1:, 1:].astype(np.float64)
+    else:
+        h = hist.astype(np.float64)
+
+    tp = np.diag(h)
+    fp = h.sum(0) - tp
+    fn = h.sum(1) - tp
+
+    iou_per_class = tp / (tp + fp + fn + eps)
+    f1_per_class  = 2.0 * tp / (2.0 * tp + fp + fn + eps)
+
+    miou = float(np.nanmean(iou_per_class)) if iou_per_class.size else 0.0
+    f1_macro = float(np.nanmean(f1_per_class)) if f1_per_class.size else 0.0
+
+    return {
+        "pixel_acc": float(acc),
+        "iou_per_class": iou_per_class,
+        "miou": float(miou),
+        "f1_per_class": f1_per_class,
+        "f1_macro": float(f1_macro),
+    }

@@ -62,23 +62,51 @@ def init_head_from_text(head_module, class_names, model_name="ViT-B-32-quickgelu
 
 # ---------- OVSeg (CLIP-ViT + light decoder) ----------
 def _clip_spatial_tokens(visual, x):
-    B = x.shape[0]
+    """
+    Достаём токены из CLIP-ViT и корректно добавляем positional_embedding,
+    интерполируя grid-часть под текущий L (= (H/ps)*(W/ps)).
+    Работает для любых квадратных входов (например, 224, 336, 448, 512 ...).
+    """
+    B, _, H, W = x.shape
+
+    # patchify -> (B, L, C)
     x = visual.conv1(x)
-    x = x.reshape(B, visual.conv1.out_channels, -1).permute(0, 2, 1)
-    class_token = visual.class_embedding.to(x.dtype)
-    class_token = class_token.expand(B, 1, -1)
-    x = torch.cat([class_token, x], dim=1)
-    x = x + visual.positional_embedding.to(x.dtype)
+    x = x.reshape(B, visual.conv1.out_channels, -1).permute(0, 2, 1)  # B,L,C
+    L = x.shape[1]  # число spatial-токенов
+
+    # class token
+    cls = visual.class_embedding.to(x.dtype).unsqueeze(0).expand(B, -1, -1)  # B,1,C
+
+    # positional embedding [1+L0, C] -> интерполируем до [1+L, C]
+    pos = visual.positional_embedding.to(x.dtype)  # (1+L0, C) или (1,1+L0,C)
+    if pos.ndim == 2:
+        pos = pos.unsqueeze(0)  # 1, 1+L0, C
+    pos_cls, pos_grid = pos[:, :1, :], pos[:, 1:, :]  # 1,1,C  и  1,L0,C
+
+    L0 = pos_grid.shape[1]
+    if L != L0:
+        gs0 = int(L0 ** 0.5)     # исходная решётка (обычно 14)
+        gs  = int(L  ** 0.5)     # новая решётка (например 32 при 512x512)
+        # 1,L0,C -> 1,C,gs0,gs0
+        pos_grid = pos_grid.reshape(1, gs0, gs0, -1).permute(0, 3, 1, 2)
+        pos_grid = torch.nn.functional.interpolate(pos_grid, size=(gs, gs), mode="bicubic", align_corners=False)
+        # обратно: 1,C,gs,gs -> 1,L,C
+        pos_grid = pos_grid.permute(0, 2, 3, 1).reshape(1, gs * gs, -1)
+
+    pos = torch.cat([pos_cls, pos_grid], dim=1)     # 1, 1+L, C
+    x = torch.cat([cls, x], dim=1) + pos            # B, 1+L, C
+
+    # transformer
     x = visual.ln_pre(x) if hasattr(visual, "ln_pre") else x
     x = x.permute(1, 0, 2)
     x = visual.transformer(x)
     x = x.permute(1, 0, 2)
     x = visual.ln_post(x) if hasattr(visual, "ln_post") else x
 
-    gh = int((visual.image_size[0] // visual.patch_size))
-    gw = int((visual.image_size[1] // visual.patch_size))
-    x = x[:, 1:, :]
-    x = x.permute(0, 2, 1).reshape(B, x.shape[-1], gh, gw)
+    # обратно в 2D map
+    L = x.shape[1] - 1
+    gs = int(L ** 0.5)
+    x = x[:, 1:, :].permute(0, 2, 1).reshape(B, x.shape[-1], gs, gs)
     return x
 
 class OvSegDecoder(nn.Module):

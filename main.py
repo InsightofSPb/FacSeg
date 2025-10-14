@@ -12,18 +12,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from utils.utils import (
-    CLIP_MEAN, CLIP_STD, IMAGENET_MEAN, IMAGENET_STD,
-    DEFAULT_CATEGORIES, LS_PALETTE,
-    _norm_name, load_aliases_json, remap_id_to_canonical,
-    hex_to_bgr, format_int, count_params, maybe_compile, stamp_out_dir,
-    infer_batch_clip, compute_pos_weight, evaluate_clip,
-    make_cosine_kernel, save_index_and_color_maps, save_overlay, save_composite_overlay
-)
+from utils.utils import *
 from datasets.datasets import TileIndex, TilesDataset, SegIndex, SegDataset
 from model_zoo.models import CLIPHead, init_head_from_text, OvSegModel, get_seg_model
 
 torch.set_float32_matmul_precision('high')
+
 
 def parse_args():
     ap = argparse.ArgumentParser("Facade defects (CLIP tiles + OVSeg + torchvision)")
@@ -77,7 +71,8 @@ def parse_args():
     ap.add_argument("--ovseg_lr_backbone", type=float, default=1e-5)
     ap.add_argument("--ovseg_decoder_ch", type=int, default=256)
     ap.add_argument("--ovseg_decoder_dropout", type=float, default=0.0)
-
+    ap.add_argument("--train_miou_ratio", type=float, default=0.10,
+                    help="Доля train для оценки mIoU/F1 после эпохи (0..1, 0=пропустить, 1=всё)")
     # checkpoints
     ap.add_argument("--ckpt", type=str, default="", help="Path to load checkpoint for infer / resume")
 
@@ -103,6 +98,7 @@ def parse_args():
 
     return args
 
+
 # ---------- helpers ----------
 def duplicate_positive_indices(index: TileIndex, indices, dup_factor: int):
     if dup_factor <= 1:
@@ -115,6 +111,7 @@ def duplicate_positive_indices(index: TileIndex, indices, dup_factor: int):
         else:
             out.append(i)
     return out
+
 
 # ---------- train loops ----------
 def clip_train(args, device):
@@ -155,9 +152,32 @@ def clip_train(args, device):
         print(f"[i] ep{ep}: loss={np.mean(losses):.4f} | mAP={score:.4f}")
         if score > best:
             best = score
+            os.makedirs(os.path.join(out_dir, "checkpoints"), exist_ok=True)
             torch.save({"state_dict": model.state_dict()}, os.path.join(out_dir, "checkpoints", "clip_head.pt"))
     print("[OK] CLIP tile head trained.")
     return
+
+
+def _eval_segmentation(model, dl, device, K_hint=None):
+    """Вычисляет confusion-matrix по всему даталоадеру и возвращает (hist, K)."""
+    model.eval()
+    hist = None
+    K = K_hint
+    with torch.no_grad():
+        # если не знаем K — возьмём с первого батча
+        for bi, (x, y, _) in enumerate(dl):
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True).long()
+            out = model(x)["out"]
+            if out.shape[-2:] != y.shape[-2:]:
+                out = F.interpolate(out, size=y.shape[-2:], mode="bilinear", align_corners=False)
+            if K is None:
+                K = out.shape[1]
+            pred = out.argmax(1)
+            h = seg_hist_np(pred.cpu().numpy(), y.cpu().numpy(), K)
+            hist = h if hist is None else (hist + h)
+    return hist, K
+
 
 def seg_train(args, device):
     out_dir = stamp_out_dir(args.out_dir)
@@ -178,21 +198,54 @@ def seg_train(args, device):
     model = maybe_compile(model, args.compile, mode=args.compile_mode, backend=args.compile_backend)
 
     total, trainable = count_params(model)
-    print(f"[i] Segmentation model params: total={format_int(total)}, trainable={format_int(trainable)}")
+    print(f"[i] Seg model params: total={total:,.0f}  trainable={trainable:.0f}")
 
     criterion = nn.CrossEntropyLoss(ignore_index=255)
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=3e-4, weight_decay=1e-4)
 
+    os.makedirs(os.path.join(out_dir, "checkpoints"), exist_ok=True)
+
     for ep in range(1, args.epochs+1):
-        model.train(); losses = []
+        model.train(); losses = []; seen = 0
         for x, m, _ in tqdm(dl_tr, desc=f"Seg Train {ep}/{args.epochs}", leave=False):
-            x = x.to(device); m = m.to(device)
+            x = x.to(device); m = m.to(device).long()
             out = model(x)["out"]
+            if out.shape[-2:] != m.shape[-2:]:
+                out = F.interpolate(out, size=m.shape[-2:], mode="bilinear", align_corners=False)
             loss = criterion(out, m)
             opt.zero_grad(); loss.backward(); opt.step()
-            losses.append(float(loss.item()))
-        print(f"[i] ep{ep} loss={np.mean(losses):.4f}")
+            losses.append(float(loss.item())); seen += x.size(0)
+        avg_loss = (sum(losses) / max(1, len(losses)))
+        print(f"[ep {ep:03d}] train_loss={avg_loss:.4f}")
+
+        # validation metrics
+        hist_val, K = _eval_segmentation(model, dl_va, device)
+        m = seg_metrics_from_hist(hist_val, ignore_background=True)
+        print(f"[ep {ep:03d}] val: pixel_acc={m['pixel_acc']:.4f}  mIoU={m['miou']:.4f}  F1={m['f1_macro']:.4f}")
+
+        # optional train metrics on a fraction
+        frac = max(0.0, min(1.0, getattr(args, "train_miou_ratio", 0.0)))
+        if frac > 0.0:
+            max_batches = int(frac * len(dl_tr)) or 1
+            model.eval(); hist_tr = None; bcount = 0
+            with torch.no_grad():
+                for x, y, _ in dl_tr:
+                    x = x.to(device); y = y.to(device).long()
+                    out = model(x)["out"]
+                    if out.shape[-2:] != y.shape[-2:]:
+                        out = F.interpolate(out, size=y.shape[-2:], mode="bilinear", align_corners=False)
+                    pred = out.argmax(1)
+                    h = seg_hist_np(pred.cpu().numpy(), y.cpu().numpy(), K)
+                    hist_tr = h if hist_tr is None else (hist_tr + h)
+                    bcount += 1
+                    if bcount >= max_batches:
+                        break
+            mt = seg_metrics_from_hist(hist_tr, ignore_background=True)
+            tag = "all" if frac >= 1.0 else f"{int(frac*100)}%"
+            print(f"[ep {ep:03d}] train[{tag}]: mIoU={mt['miou']:.4f}  F1={mt['f1_macro']:.4f}")
+
         torch.save({"state_dict": model.state_dict()}, os.path.join(out_dir, "checkpoints", f"seg_ep{ep:03d}.pt"))
+
 
 def ovseg_train(args, device):
     out_dir = stamp_out_dir(args.out_dir)
@@ -217,6 +270,17 @@ def ovseg_train(args, device):
                        device=device).to(device)
     model = maybe_compile(model, args.compile, mode=args.compile_mode, backend=args.compile_backend)
 
+    # param counters (чистые числа)
+    try:
+        n_backbone = sum(p.numel() for p in model.visual.parameters())
+    except Exception:
+        n_backbone = 0
+    try:
+        n_head = sum(p.numel() for p in model.decoder.parameters())
+    except Exception:
+        n_head = sum(p.numel() for p in model.parameters()) - n_backbone
+    print(f"[i] OVSeg params: backbone={n_backbone}  head={n_head}  total={n_backbone + n_head}")
+
     dec_params = list(model.decoder.parameters())
     bb_params  = [p for p in model.visual.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(
@@ -227,16 +291,49 @@ def ovseg_train(args, device):
     )
     criterion = nn.CrossEntropyLoss(ignore_index=255)
 
+    os.makedirs(os.path.join(out_dir, "checkpoints"), exist_ok=True)
+
     for ep in range(1, args.epochs+1):
-        model.train(); losses = []
+        model.train(); losses = []; seen = 0
         for x, m, _ in tqdm(dl_tr, desc=f"OVSeg Train {ep}/{args.epochs}", leave=False):
-            x = x.to(device); m = m.to(device)
+            x = x.to(device); m = m.to(device).long()
             out = model(x)["out"]
+            if out.shape[-2:] != m.shape[-2:]:
+                out = F.interpolate(out, size=m.shape[-2:], mode="bilinear", align_corners=False)
             loss = criterion(out, m)
             opt.zero_grad(); loss.backward(); opt.step()
-            losses.append(float(loss.item()))
-        print(f"[i] ep{ep} loss={np.mean(losses):.4f}")
+            losses.append(float(loss.item())); seen += x.size(0)
+        avg_loss = (sum(losses) / max(1, len(losses)))
+        print(f"[ep {ep:03d}] train_loss={avg_loss:.4f}")
+
+        # validation metrics
+        hist_val, K = _eval_segmentation(model, dl_va, device)
+        m = seg_metrics_from_hist(hist_val, ignore_background=True)
+        print(f"[ep {ep:03d}] val: pixel_acc={m['pixel_acc']:.4f}  mIoU={m['miou']:.4f}  F1={m['f1_macro']:.4f}")
+
+        # optional train metrics on a fraction
+        frac = max(0.0, min(1.0, getattr(args, "train_miou_ratio", 0.0)))
+        if frac > 0.0:
+            max_batches = int(frac * len(dl_tr)) or 1
+            model.eval(); hist_tr = None; bcount = 0
+            with torch.no_grad():
+                for x, y, _ in dl_tr:
+                    x = x.to(device); y = y.to(device).long()
+                    out = model(x)["out"]
+                    if out.shape[-2:] != y.shape[-2:]:
+                        out = F.interpolate(out, size=y.shape[-2:], mode="bilinear", align_corners=False)
+                    pred = out.argmax(1)
+                    h = seg_hist_np(pred.cpu().numpy(), y.cpu().numpy(), K)
+                    hist_tr = h if hist_tr is None else (hist_tr + h)
+                    bcount += 1
+                    if bcount >= max_batches:
+                        break
+            mt = seg_metrics_from_hist(hist_tr, ignore_background=True)
+            tag = "all" if frac >= 1.0 else f"{int(frac*100)}%"
+            print(f"[ep {ep:03d}] train[{tag}]: mIoU={mt['miou']:.4f}  F1={mt['f1_macro']:.4f}")
+
         torch.save({"state_dict": model.state_dict()}, os.path.join(out_dir, "checkpoints", f"ovseg_ep{ep:03d}.pt"))
+
 
 # ---------- inference ----------
 @torch.no_grad()
@@ -293,7 +390,7 @@ def clip_infer_on_dir(args, device):
                 if len(batch_tiles) >= args.batch_size:
                     probs = infer_batch_clip(model, batch_tiles, device)
                     for p, (xx2, yy2, ww2, hh2) in zip(probs, coords):
-                        k = kernel_full[:hh2, :ww2]                    
+                        k = kernel_full[:hh2, :ww2]
                         acc[:, yy2:yy2+hh2, xx2:xx2+ww2] += p[:, None, None] * k
                         cnt[yy2:yy2+hh2, xx2:xx2+ww2] += k
                     batch_tiles, coords = [], []
@@ -324,6 +421,7 @@ def clip_infer_on_dir(args, device):
         save_overlay(src, color_map, over_path, alpha=args.vis_max_alpha, blur=args.vis_blur,
                      add_legend=args.vis_legend, class_names=class_names, palette=LS_PALETTE)
 
+
 def seg_infer(args, device, use_ovseg=False):
     assert args.ckpt, "--ckpt is required for seg_infer/ovseg_infer"
     seg_index = SegIndex(args.images_dir if args.images_dir else args.test_dir,
@@ -344,7 +442,8 @@ def seg_infer(args, device, use_ovseg=False):
     out_color = os.path.join(args.out_dir, "seg_color"); os.makedirs(out_color, exist_ok=True)
     out_over  = os.path.join(args.out_dir, "seg_over");  os.makedirs(out_over, exist_ok=True)
 
-    class_names = [seg_index.idx_to_name[i+1] for i in range(seg_index.num_classes)]
+    # имена классов в порядке каналов (1..C — классы, 0 — фон)
+    class_names = seg_index.classes
 
     test_dir = args.test_dir if args.test_dir else args.images_dir
     img_paths = []
@@ -400,6 +499,7 @@ def seg_infer(args, device, use_ovseg=False):
         save_overlay(src, color_map, over_path, alpha=args.vis_max_alpha, blur=args.vis_blur,
                      add_legend=args.vis_legend, class_names=class_names, palette=LS_PALETTE)
 
+
 def main():
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -416,6 +516,7 @@ def main():
         ovseg_train(args, device); return
     if args.mode == "ovseg_infer":
         seg_infer(args, device, use_ovseg=True); return
+
 
 if __name__ == "__main__":
     main()

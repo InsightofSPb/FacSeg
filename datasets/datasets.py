@@ -13,10 +13,54 @@ from albumentations.pytorch import ToTensorV2
 from utils.utils import (
     CLIP_MEAN, CLIP_STD, IMAGENET_MEAN, IMAGENET_STD,
     DEFAULT_CATEGORIES, load_aliases_json, _norm_name, remap_id_to_canonical,
-    polygons_to_mask, safe_path
+    polygons_to_mask
 )
 
+# ----------------------------- helpers -----------------------------
+
+def _resolve_image_path(images_dir, im):
+    """
+    Расширенный резолвер пути:
+    - images_dir/file_name
+    - images_dir/basename(path) или абсолютный path
+    - обрезка префикса до первого '-' у file_name (xxxx-IMG_123.jpg -> IMG_123.jpg)
+    - в крайнем случае — os.walk по каталогу
+    """
+    cands = []
+
+    fname = im.get("file_name", "") or ""
+    if fname:
+        cands.append(os.path.join(images_dir, fname))
+
+    jpath = im.get("path", "") or ""
+    if jpath:
+        if os.path.isabs(jpath) and os.path.isfile(jpath):
+            return jpath
+        cands.append(os.path.join(images_dir, os.path.basename(jpath)))
+
+    if fname and "-" in fname:
+        tail = fname.split("-", 1)[1]
+        cands.append(os.path.join(images_dir, tail))
+
+    for p in cands:
+        if os.path.isfile(p):
+            return p
+
+    base = os.path.basename(fname) if fname else ""
+    tail = base.split("-", 1)[-1] if base else ""
+    try:
+        for root, _, files in os.walk(images_dir):
+            for fn in files:
+                low = fn.lower()
+                if (base and low == base.lower()) or (tail and low == tail.lower()):
+                    return os.path.join(root, fn)
+    except Exception:
+        pass
+    return None
+
+
 # ---------- Tile (multi-label classification) ----------
+
 class TileIndex:
     def __init__(self, images_dir, coco_json, tile_size=768, stride=512,
                  cover_thr=0.01, keep_empty=True, class_aliases=""):
@@ -27,59 +71,75 @@ class TileIndex:
         with open(coco_json, "r", encoding="utf-8") as f:
             coco = json.load(f)
 
-        # categories -> canonical names
+        # categories -> canonical
         if "categories" in coco and coco["categories"]:
             raw_map = {c["id"]: c.get("name", f"cat_{c['id']}") for c in coco["categories"]}
         else:
+            # если категорий нет — используем DEFAULT_CATEGORIES (id: name)
             raw_map = DEFAULT_CATEGORIES.copy()
 
         aliases = load_aliases_json(class_aliases)
         norm_map = {cid: _norm_name(n) for cid, n in raw_map.items()}
         canon_map, present_names = remap_id_to_canonical(norm_map, aliases, DEFAULT_CATEGORIES)
 
-        # Stable order by DEFAULT_CATEGORIES but only those present
-        canon_order = [DEFAULT_CATEGORIES[k] for k in sorted(DEFAULT_CATEGORIES.keys()) if DEFAULT_CATEGORIES[k] in present_names]
+        # Стабильный порядок по DEFAULT_CATEGORIES, но только присутствующие
+        canon_order = [DEFAULT_CATEGORIES[k] for k in sorted(DEFAULT_CATEGORIES.keys())
+                       if DEFAULT_CATEGORIES[k] in present_names]
         self.class_ids = [cid for cid, nm in canon_map.items() if nm in set(canon_order)]
         self.classes = canon_order
         self.C = len(self.classes)
+        self.num_classes = self.C
 
+        # группируем аннотации по изображению
         anns_by_img = defaultdict(list)
         for a in coco.get("annotations", []):
             if a.get("iscrowd", 0) == 1:
                 continue
+            if a.get("category_id") not in canon_map:
+                continue
             anns_by_img[a["image_id"]].append(a)
 
+        # оставляем только изображения, по которым есть аннотации
         self.images = [im for im in coco.get("images", []) if im["id"] in anns_by_img]
         assert len(self.images) > 0, "No annotated images found in COCO."
 
         self.records = []
-        for im in tqdm(self.images, desc="Index tiles"):
-            path = safe_path(images_dir, im["file_name"])
+        # индексируем
+        for im in tqdm(self.images, desc="Index tiles", unit="img"):
+            path = _resolve_image_path(images_dir, im)
             if path is None:
-                print(f"[!] Missing image file: {im['file_name']}")
+                miss = im.get("file_name") or im.get("path") or str(im.get("id"))
+                print(f"[!] Missing image file: {miss}")
                 continue
-            H, W = im["height"], im["width"]
 
+            H, W = int(im["height"]), int(im["width"])
+
+            # собираем полные маски классов
             class_masks = {cid: np.zeros((H, W), np.uint8) for cid in self.class_ids}
             for a in anns_by_img[im["id"]]:
                 cid = a["category_id"]
                 seg = a.get("segmentation", [])
                 if isinstance(seg, list) and seg and isinstance(seg[0], list):
-                    class_masks[cid] |= polygons_to_mask(seg, H, W, 1)
+                    class_masks[cid] |= polygons_to_mask(seg, H, W, value=1)
 
-                for y in range(0, max(1, H - self.tile_size + 1), self.stride):
-                    for x in range(0, max(1, W - self.tile_size + 1), self.stride):
-                        tile_h = min(self.tile_size, H - y)
-                        tile_w = min(self.tile_size, W - x)
-                        tile_area = float(tile_h * tile_w)
-                        labels = np.zeros(self.C, np.float32)
-                        y2, x2 = y + tile_h, x + tile_w
-                        for j, cid in enumerate(self.class_ids):
-                            inter = class_masks[cid][y:y2, x:x2].sum()
-                            if inter / tile_area >= cover_thr:
-                                labels[j] = 1.0
-                        if keep_empty or labels.sum() > 0:
-                            self.records.append((im["id"], path, x, y, min(self.tile_size, tile_w), labels))
+            # тайлим (вынесено ВНЕ цикла по аннотациям!)
+            for y in range(0, max(1, H - self.tile_size + 1), self.stride):
+                for x in range(0, max(1, W - self.tile_size + 1), self.stride):
+                    tile_h = min(self.tile_size, H - y)
+                    tile_w = min(self.tile_size, W - x)
+                    tile_area = float(tile_h * tile_w)
+                    y2, x2 = y + tile_h, x + tile_w
+
+                    labels = np.zeros(self.C, np.float32)
+                    # canon_order ↔ self.class_ids маппятся по позиции в self.class_ids
+                    for j, cid in enumerate(self.class_ids):
+                        inter = class_masks[cid][y:y2, x:x2].sum()
+                        if inter / tile_area >= cover_thr:
+                            labels[j] = 1.0
+
+                    if keep_empty or labels.sum() > 0:
+                        # сохраняем фактическую ширину тайла (для краёв); при желании можно добавить и высоту
+                        self.records.append((im["id"], path, x, y, tile_w, labels))
 
         self.image_ids = sorted({r[0] for r in self.records})
 
@@ -99,7 +159,7 @@ class TileIndex:
 class TilesDataset(Dataset):
     def __init__(self, index: TileIndex, indices, augment=True, img_size=224):
         self.index = index
-        self.idxs = indices
+        self.idxs = list(indices)
         self.size = img_size
         if augment:
             self.tf = A.Compose([
@@ -131,119 +191,121 @@ class TilesDataset(Dataset):
         return tile, torch.from_numpy(labels), (path, x, y, ts)
 
 
-# ---------- Dense Segmentation (COCO -> dense masks) ----------
+# ----------------------------- Segmentation index -----------------------------
+
 class SegIndex:
     """
-    Собирает плотные маски из COCO полигонов.
-    Ремап категорий в 1..C, фон=0. Алиасы применяются корректно.
+    Индекс сегментационного датасета из COCO-like json.
+    Преобразует классы через алиасы -> канон (DEFAULT_CATEGORIES).
+    Собирает целевую маску [0..C], где 0=фон, 1..C — канонические классы.
     """
-    def __init__(self, images_dir, coco_json, class_aliases=""):
+    def __init__(self, images_dir: str, coco_json: str, class_aliases: str = ""):
         self.images_dir = images_dir
+        self.coco_json = coco_json
+        self.aliases_tbl = load_aliases_json(class_aliases) if class_aliases else {}
+
         with open(coco_json, "r", encoding="utf-8") as f:
             coco = json.load(f)
 
-        if "categories" in coco and coco["categories"]:
-            raw_id_to_name = {c["id"]: c.get("name", f"cat_{c['id']}") for c in coco["categories"]}
-        else:
-            raw_id_to_name = DEFAULT_CATEGORIES.copy()
+        # categories -> canonical
+        id_to_name = {c["id"]: c["name"] for c in coco.get("categories", [])}
+        id_to_norm, present_names = remap_id_to_canonical(id_to_name, self.aliases_tbl, fallback=DEFAULT_CATEGORIES)
+        norm2canon = {_norm_name(v): v for v in DEFAULT_CATEGORIES.values()}
+        coco_id_to_canon = {}
+        for cid, nrm in id_to_norm.items():
+            if nrm in present_names and nrm in norm2canon:
+                coco_id_to_canon[cid] = norm2canon[nrm]
 
-        aliases = load_aliases_json(class_aliases)
-        norm_id_to_name = {cid: _norm_name(n) for cid, n in raw_id_to_name.items()}
-        canon_map, present_names = remap_id_to_canonical(norm_id_to_name, aliases, DEFAULT_CATEGORIES)
+        canon_order = [DEFAULT_CATEGORIES[k] for k in sorted(DEFAULT_CATEGORIES.keys())
+                       if DEFAULT_CATEGORIES[k] in coco_id_to_canon.values()]
+        self.class_ids = [cid for cid, nm in coco_id_to_canon.items() if nm in set(canon_order)]
+        self.classes = canon_order
+        self.C = len(self.classes)
+        self.num_classes = self.C  # совместимость со старым кодом
 
-        # Стабильный порядок классов (только те, что реально присутствуют)
-        canon_order = [DEFAULT_CATEGORIES[k] for k in sorted(DEFAULT_CATEGORIES.keys()) if DEFAULT_CATEGORIES[k] in present_names]
-        name_to_newidx = {nm: i+1 for i, nm in enumerate(canon_order)}  # 1..C
-
-        self.idx_to_name = {i+1: nm for i, nm in enumerate(canon_order)}
-        self.num_classes = len(self.idx_to_name)
-
+        # сгруппируем аннотации по изображению
         anns_by_img = defaultdict(list)
         for a in coco.get("annotations", []):
             if a.get("iscrowd", 0) == 1:
                 continue
+            if a.get("category_id") not in coco_id_to_canon:
+                continue
             anns_by_img[a["image_id"]].append(a)
 
+        # только изображения, по которым есть аннотации
+        self.images = [im for im in coco.get("images", []) if im["id"] in anns_by_img]
+        assert len(self.images) > 0, "No images with segmentation masks."
+
         self.items = []
-        for im in coco.get("images", []):
-            img_id = im["id"]
-            if img_id not in anns_by_img:
-                continue
-            path = safe_path(images_dir, im["file_name"])
+        canon_to_idx = {nm: i + 1 for i, nm in enumerate(self.classes)}  # 1..C
+
+        for im in tqdm(self.images, desc="Index masks", unit="img"):
+            H, W = int(im["height"]), int(im["width"])
+            path = _resolve_image_path(images_dir, im)
             if path is None:
-                print(f"[!] Missing image file: {im['file_name']}")
+                miss = im.get("file_name") or im.get("path") or str(im.get("id"))
+                print(f"[!] Missing image file: {miss}")
                 continue
-            H, W = im["height"], im["width"]
 
-            # 1) аккумулируем бинарки по классам
-            class_bin = {i+1: np.zeros((H, W), np.uint8) for i in range(len(canon_order))}
-            for a in anns_by_img[img_id]:
-                cid = a["category_id"]
-                raw_name = norm_id_to_name.get(cid, None)
-                if raw_name is None:
-                    continue
-                canon_name = canon_map.get(cid, raw_name)
-                idx = name_to_newidx.get(canon_name, 0)  # 1..C
-                seg = a.get("segmentation", [])
-                if idx > 0 and isinstance(seg, list) and seg and isinstance(seg[0], list):
-                    poly_mask = polygons_to_mask(seg, H, W, 1)
-                    class_bin[idx] |= poly_mask
-
-            # 2) склеиваем по приоритету (игнорируя отсутствующие в датасете)
-            PRIORITY = ["CRACK","MISSING_ELEMENT","SPALLING","DELAMINATION",
-                        "CORROSION","REPAIRS","TEXT_OR_IMAGES",
-                        "WATER_STAIN","EFFLORESCENCE","ORNAMENT_INTACT"]
             mask = np.zeros((H, W), np.uint8)
-            unassigned = mask == 0
-            for name in PRIORITY:
-                idx = name_to_newidx.get(name, 0)
-                if idx == 0:
+            for a in anns_by_img[im["id"]]:
+                canon = coco_id_to_canon[a["category_id"]]
+                idx = canon_to_idx[canon]
+                seg = a.get("segmentation", [])
+                if not seg:
                     continue
-                m = class_bin[idx] > 0
-                take = m & unassigned
-                mask[take] = idx
-                unassigned &= ~take
+                m = polygons_to_mask(seg, H, W, value=1)
+                mask[m > 0] = idx
 
-            self.items.append(dict(id=img_id, path=path, height=H, width=W, mask=mask))
+            if mask.sum() == 0:
+                continue
 
-        assert len(self.items) > 0, "No images with segmentation masks."
+            self.items.append({
+                "image_id": im["id"],
+                "path": path,
+                "mask": mask,
+            })
+
+        assert len(self.items) > 0, "No valid items built (check paths and annotations)."
 
     def split_by_images(self, val_ratio=0.25, seed=42):
-        rng = random.Random(seed)
-        ids = list(range(len(self.items)))
-        rng.shuffle(ids)
-        n_val = max(1, int(round(len(ids) * val_ratio)))
-        return ids[n_val:], ids[:n_val]
+        n = len(self.items)
+        ids = list(range(n))
+        random.Random(seed).shuffle(ids)
+        val_n = max(1, int(round(val_ratio * n)))
+        va_idx = sorted(ids[:val_n])
+        tr_idx = sorted(ids[val_n:])
+        return tr_idx, va_idx
 
+
+# ----------------------------- Dataset wrapper -----------------------------
+
+def _build_tf(train: bool, size: int, norm_mode: str):
+    if train:
+        aug = [
+            A.LongestMaxSize(max_size=size),
+            A.PadIfNeeded(min_height=size, min_width=size, border_mode=cv2.BORDER_CONSTANT),  # без value
+            A.HorizontalFlip(p=0.5),
+            A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.2, rotate_limit=15, p=0.5,
+                               border_mode=cv2.BORDER_REFLECT_101),
+        ]
+    else:
+        aug = [
+            A.LongestMaxSize(max_size=size),
+            A.PadIfNeeded(min_height=size, min_width=size, border_mode=cv2.BORDER_CONSTANT),  # без value
+        ]
+    if norm_mode == "clip":
+        aug.append(A.Normalize(mean=CLIP_MEAN, std=CLIP_STD, max_pixel_value=255.0))
+    else:
+        aug.append(A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD, max_pixel_value=255.0))
+    return A.Compose(aug)
 
 class SegDataset(Dataset):
-    """
-    Train: random scale -> pad -> random crop -> aug.
-    Val/Test: resize longest -> pad to square.
-    norm_mode: 'imagenet' (torchvision) или 'clip' (OVSeg).
-    """
-    def __init__(self, seg_index: SegIndex, indices, train=True, size=512, norm_mode="imagenet"):
+    def __init__(self, seg_index: SegIndex, idxs, train: bool, size: int, norm_mode: str = "clip"):
         self.si = seg_index
-        self.idxs = indices
-        self.size = size
-        mean, std = (IMAGENET_MEAN, IMAGENET_STD) if norm_mode == "imagenet" else (CLIP_MEAN, CLIP_STD)
-        if train:
-            self.tf = A.Compose([
-                A.LongestMaxSize(max_size=int(size * 1.25)),
-                A.PadIfNeeded(size, size, border_mode=cv2.BORDER_CONSTANT),
-                A.RandomCrop(size, size),
-                A.HorizontalFlip(p=0.5),
-                A.Affine(rotate=(-10, 10), fit_output=False, border_mode=cv2.BORDER_REFLECT, p=0.5),
-                A.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.10, hue=0.02, p=0.3),
-                A.Normalize(mean=mean, std=std)
-            ])
-        else:
-            self.tf = A.Compose([
-                A.LongestMaxSize(max_size=size),
-                A.PadIfNeeded(size, size, border_mode=cv2.BORDER_CONSTANT),
-                A.Normalize(mean=mean, std=std)
-            ])
-        self.to_tensor = ToTensorV2()
+        self.idxs = list(idxs)
+        self.tf = _build_tf(train, size, norm_mode)
+        self.to_tensor = ToTensorV2(transpose_mask=False)
 
     def __len__(self):
         return len(self.idxs)
