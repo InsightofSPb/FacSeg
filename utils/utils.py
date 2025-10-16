@@ -1,14 +1,11 @@
-import os, json, math, hashlib
+import os, json
 from datetime import datetime
-from collections import defaultdict
 
 import numpy as np
 import cv2
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from sklearn.metrics import average_precision_score, roc_auc_score
+
 
 # ---------- stats & palettes ----------
 CLIP_MEAN = [0.48145466, 0.4578275, 0.40821073]
@@ -182,53 +179,6 @@ def stamp_out_dir(base):
     os.makedirs(os.path.join(out, "vis"), exist_ok=True)
     return out
 
-# ---------- CLIP helpers ----------
-@torch.no_grad()
-def infer_batch_clip(model, tiles_batch, device):
-    if isinstance(tiles_batch, list):
-        x = torch.stack(tiles_batch, dim=0).to(device, non_blocking=True)
-    else:
-        x = tiles_batch.to(device, non_blocking=True)
-    logits, _ = model(x)
-    probs = torch.sigmoid(logits).detach().cpu().numpy()
-    return probs
-
-def compute_pos_weight(dl_tr, n_classes):
-    pos = torch.zeros(n_classes, dtype=torch.float32)
-    cnt = 0
-    for _, y, _ in dl_tr:
-        pos += y.sum(dim=0); cnt += y.shape[0]
-    pos = torch.clamp(pos, min=1.0)
-    neg = torch.clamp(cnt - pos, min=1.0)
-    return neg / pos
-
-def evaluate_clip(model, dl, device, n_classes, progress_desc="CLIP Val"):
-    model.eval()
-    ys, ps = [], []
-    for x, y, _ in dl:
-        x = x.to(device); y = y.to(device)
-        with torch.no_grad():
-            logits, _ = model(x)
-            prob = torch.sigmoid(logits)
-        ys.append(y.detach().cpu().numpy())
-        ps.append(prob.detach().cpu().numpy())
-    Y = np.concatenate(ys, 0); P = np.concatenate(ps, 0)
-    ap, auc = [], []
-    for c in range(n_classes):
-        try: ap.append(float(average_precision_score(Y[:, c], P[:, c])))
-        except Exception: ap.append(float("nan"))
-        try: auc.append(float(roc_auc_score(Y[:, c], P[:, c])))
-        except Exception: auc.append(float("nan"))
-    macro = {"ap": np.nanmean(ap), "auc": np.nanmean(auc)}
-    return P, macro, ap, auc
-
-# ---------- kernels & viz ----------
-def make_cosine_kernel(ts: int):
-    wx = 0.5 * (1 - np.cos(2 * np.pi * (np.arange(ts) + 0.5) / ts))
-    wy = wx.copy()
-    k = np.outer(wy, wx).astype(np.float32)
-    k /= k.max()
-    return k
 
 def save_index_and_color_maps(acc_C_hw, class_names, idx_path, color_path,
                               vis_thr=0.5, palette=LS_PALETTE, add_legend=True):
