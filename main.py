@@ -1,9 +1,8 @@
-# main.py
-import os, json, math, argparse, random, sys
+import os, json, argparse, random, sys, re
 import numpy as np
 import cv2
 from tqdm.auto import tqdm
-
+from typing import Optional
 # ensure project root on sys.path
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
@@ -13,13 +12,13 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from utils.utils import *
-from datasets.datasets import TileIndex, TilesDataset, SegIndex, SegDataset, _build_tf, load_coco_class_order
-from model_zoo.models import CLIPHead, init_head_from_text, OvSegModel, get_seg_model
+from datasets.datasets import *
+from model_zoo.models import *
 
 torch.set_float32_matmul_precision('high')
 
 
-DEFAULT_IMAGES_DIR = "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/images"
+DEFAULT_IMAGES_DIR = "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/train"
 DEFAULT_COCO_JSON = "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/annotations/result_coco.json"
 DEFAULT_TEST_DIR = "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test"
 DEFAULT_OUT_DIR = "/home/sasha/Facade_segmentation/results"
@@ -27,9 +26,8 @@ DEFAULT_PREPARED_DIR = "/home/sasha/Facade_segmentation/prepared"
 
 
 def parse_args():
-    ap = argparse.ArgumentParser("Facade defects (CLIP tiles + OVSeg + torchvision)")
-    # common
-    ap.add_argument("--mode", choices=["infer","clip_train","seg_train","seg_infer","ovseg_train","ovseg_infer","seg_prepare"], default="infer")
+    ap = argparse.ArgumentParser("Facade defects (OVSeg)")
+    ap.add_argument("--mode", choices=["ovseg_train", "ovseg_infer", "seg_prepare"], default="ovseg_train")
     ap.add_argument("--images_dir", type=str, default=DEFAULT_IMAGES_DIR)
     ap.add_argument("--coco_json",  type=str, default=DEFAULT_COCO_JSON)
     ap.add_argument("--test_dir",   type=str, default=DEFAULT_TEST_DIR)
@@ -38,40 +36,22 @@ def parse_args():
     ap.add_argument("--compile", action="store_true")
     ap.add_argument("--compile_mode", default="default")
     ap.add_argument("--compile_backend", default=None)
-    ap.add_argument("--val_ratio", type=float, default=0.2)
+    ap.add_argument("--val_ratio", type=float, default=0.25)
     ap.add_argument("--class_aliases", type=str, default="")
     ap.add_argument("--vis_legend", action="store_true", help="Draw legend on saved visuals")
-    ap.add_argument("--dump_aliases_template", type=str, default="", help="Path to write a sample aliases.json and exit")
 
-    # clip head
-    ap.add_argument("--clip_model", default="ViT-B-32-quickgelu")
-    ap.add_argument("--clip_ckpt",  default="openai")
-    ap.add_argument("--head_type",  default="mlp", choices=["mlp","linear"])
-    ap.add_argument("--head_hidden", type=int, default=2048)
-    ap.add_argument("--head_dropout", type=float, default=0.1)
-
-    ap.add_argument("--tile_size", type=int, default=768)
-    ap.add_argument("--stride",    type=int, default=512)
-    ap.add_argument("--cover_thr", type=float, default=0.01)
-    ap.add_argument("--keep_empty", action="store_true")
-    ap.add_argument("--img_size",  type=int, default=336)
-    ap.add_argument("--batch_size", type=int, default=64)
-    ap.add_argument("--epochs",     type=int, default=12)
-    ap.add_argument("--lr",         type=float, default=1e-3)
-    ap.add_argument("--pos_dup",    type=int, default=2)
-
-    ap.add_argument("--vis_thr",    type=float, default=0.5)
     ap.add_argument("--vis_blur",   type=int, default=0)
     ap.add_argument("--vis_max_alpha", type=float, default=0.6)
-
-    # torchvision seg
-    ap.add_argument("--seg_model", default="deeplabv3_resnet50")
-    ap.add_argument("--seg_img_size", type=int, default=512)
-    ap.add_argument("--seg_batch_size", type=int, default=6)
-    ap.add_argument("--seg_dup", type=int, default=1)
-    ap.add_argument("--seg_weights", default="imagenet")
-
+    ap.add_argument("--dump_aliases_template", type=str, default="", help="Path to write a sample aliases.json and exit")
+    ap.add_argument("--aug_dump_dir", type=str, default="",
+                    help="Каталог для сохранения примеров аугментаций (train)")
+    ap.add_argument("--aug_dump_limit", type=int, default=0,
+                    help="Сколько аугментированных семплов сохранить (0=выкл)")
     # ovseg
+    ap.add_argument("--epochs", type=int, default=100)
+    ap.add_argument("--ovseg_img_size", type=int, default=512)
+    ap.add_argument("--ovseg_batch_size", type=int, default=2)
+    ap.add_argument("--ovseg_dup", type=int, default=10)
     ap.add_argument("--ovseg_model", default="ViT-B-16")
     ap.add_argument("--ovseg_ckpt",  default="openai")
     ap.add_argument("--ovseg_freeze_backbone", action="store_true")
@@ -79,7 +59,7 @@ def parse_args():
     ap.add_argument("--ovseg_lr_backbone", type=float, default=1e-5)
     ap.add_argument("--ovseg_decoder_ch", type=int, default=256)
     ap.add_argument("--ovseg_decoder_dropout", type=float, default=0.0)
-    ap.add_argument("--train_miou_ratio", type=float, default=0.10,
+    ap.add_argument("--train_miou_ratio", type=float, default=0.1,
                     help="Доля train для оценки mIoU/F1 после эпохи (0..1, 0=пропустить, 1=всё)")
     # checkpoints
     ap.add_argument("--ckpt", type=str, default="", help="Path to load checkpoint for infer / resume")
@@ -91,7 +71,7 @@ def parse_args():
 
     args = ap.parse_args()
 
-    for attr in ["images_dir", "coco_json", "test_dir", "test_coco_json", "out_dir", "prep_out_dir", "class_aliases", "ckpt"]:
+    for attr in ["images_dir", "coco_json", "test_dir", "test_coco_json", "out_dir", "prep_out_dir", "class_aliases", "ckpt", "aug_dump_dir"]:
         val = getattr(args, attr, "")
         if isinstance(val, str):
             setattr(args, attr, os.path.expanduser(val.strip()))
@@ -117,30 +97,25 @@ def parse_args():
     return args
 
 
-# ---------- helpers ----------
-def duplicate_positive_indices(index: TileIndex, indices, dup_factor: int):
-    if dup_factor <= 1:
-        return indices
-    out = []
-    for i in indices:
-        labels = index.records[i][5]
-        if labels.sum() > 0:
-            out.extend([i] * dup_factor)
-        else:
-            out.append(i)
-    return out
-
 
 class TopKCheckpointManager:
-    def __init__(self, directory: str, prefix: str, k: int = 5):
+    def __init__(self, directory: str, prefix: str, k: int = 5,
+                 mode: str = "min", saved: Optional[list] = None):
         self.directory = directory
         self.prefix = prefix
         self.k = k
-        self._saved = []  # list of (loss, path)
+        mode = mode.lower().strip()
+        if mode not in {"min", "max"}:
+            raise ValueError(f"Unsupported mode '{mode}', expected 'min' or 'max'")
+        self.mode = mode
+        self._saved = list(saved) if saved is not None else []  # list of (score, path)
+        self._saved.sort(key=lambda x: x[0], reverse=(self.mode == "max"))
+        if len(self._saved) > self.k:
+            self._saved = self._saved[:self.k]
 
-    def _format_metrics_suffix(self, metrics: dict, loss: float) -> str:
+    def _format_metrics_suffix(self, metrics: dict, score: float) -> str:
         parts = [
-            f"loss_{loss:.4f}",
+            f"loss_{score:.4f}",
         ]
         order = [
             ("pixel_acc", "pixelacc"),
@@ -152,14 +127,14 @@ class TopKCheckpointManager:
                 parts.append(f"{tag}_{metrics[key]:.4f}")
         return "_".join(parts)
 
-    def save(self, state_dict: dict, epoch: int, loss: float, metrics: dict, extra=None):
-        suffix = self._format_metrics_suffix(metrics, loss)
+    def save(self, state_dict: dict, epoch: int, score: float, metrics: dict, extra=None):
+        suffix = self._format_metrics_suffix(metrics, score)
         fname = f"{self.prefix}_ep{epoch:03d}_{suffix}.pt"
         path = os.path.join(self.directory, fname)
         payload = {
             "state_dict": state_dict,
             "epoch": int(epoch),
-            "val_loss": float(loss),
+            "val_loss": float(score),
             "metrics": metrics,
         }
         if extra:
@@ -167,8 +142,9 @@ class TopKCheckpointManager:
                 if value is not None:
                     payload[key] = value
         torch.save(payload, path)
-        self._saved.append((loss, path))
-        self._saved.sort(key=lambda x: x[0])
+        self._saved.append((score, path))
+        reverse = (self.mode == "max")
+        self._saved.sort(key=lambda x: x[0], reverse=reverse)
         while len(self._saved) > self.k:
             _, drop_path = self._saved.pop(-1)
             try:
@@ -238,9 +214,41 @@ def _mask_to_color(mask, class_names):
         color[mask == idx] = hex_to_bgr(LS_PALETTE.get(name, "#FF00FF"))
     return color
 
+def _generate_crop_sizes(split_name: str, count: int, size_min: int, size_max: int, rng: random.Random):
+    count = max(0, int(count))
+    if count == 0:
+        return []
+    size_min = max(32, int(size_min))
+    size_max = max(size_min, int(size_max))
+    split_name = (split_name or "train").lower()
+    if split_name == "train":
+        return [int(rng.randint(size_min, size_max)) for _ in range(count)]
+    if count == 1:
+        return [int(round((size_min + size_max) / 2.0))]
+    vals = np.linspace(size_min, size_max, count)
+    return [int(round(v)) for v in vals]
 
+
+def _sample_crop_box(split_name: str, H: int, W: int, side: int, rng: random.Random):
+    side = int(max(1, min(side, H, W)))
+    split_name = (split_name or "train").lower()
+    if split_name == "train":
+        y0 = 0 if H == side else rng.randint(0, H - side)
+        x0 = 0 if W == side else rng.randint(0, W - side)
+    else:  # center crop for val/test
+        y0 = max(0, (H - side) // 2)
+        x0 = max(0, (W - side) // 2)
+    return int(x0), int(y0), int(side), int(side)
+
+
+def _resize_image_and_mask(image: np.ndarray, mask: np.ndarray, size: int):
+    interp_img = cv2.INTER_AREA if image.shape[0] > size or image.shape[1] > size else cv2.INTER_LINEAR
+    resized_image = cv2.resize(image, (size, size), interpolation=interp_img)
+    resized_mask = cv2.resize(mask, (size, size), interpolation=cv2.INTER_NEAREST)
+    return resized_image, resized_mask
 def _export_seg_split(seg_index: SegIndex, idxs, split_name: str, out_root: str,
-                      size: int, norm_mode: str, alpha: float = 0.6):
+                      size: int, norm_mode: str, alpha: float = 0.6, crop_conf=None,
+                      rng: Optional[random.Random] = None):
     split_root = os.path.join(out_root, split_name)
     img_dir = os.path.join(split_root, "images")
     mask_dir = os.path.join(split_root, "masks")
@@ -249,44 +257,142 @@ def _export_seg_split(seg_index: SegIndex, idxs, split_name: str, out_root: str,
     os.makedirs(mask_dir, exist_ok=True)
     os.makedirs(combo_dir, exist_ok=True)
 
-    tf = _build_tf(train=(split_name == "train"), size=size, norm_mode=norm_mode, include_normalize=False)
+    rng = rng or random.Random()
+    crop_conf = crop_conf or {}
+    crop_count = max(0, int(crop_conf.get("count", 1)))
+    crop_min = int(crop_conf.get("min_size", size))
+    crop_max = int(crop_conf.get("max_size", size))
+    tf = build_prepare_tf(split_name, norm_mode, include_normalize=False)
+    tf_pipeline = [type(t).__name__ for t in getattr(tf, "transforms", [])]
     meta = []
-    for i, idx in enumerate(tqdm(idxs, desc=f"Prepare {split_name}", leave=False)):
+    duplicate_groups = {}
+    mismatched = []
+    sample_counter = 0
+    for idx in tqdm(idxs, desc=f"Prepare {split_name}", leave=False):
         rec = seg_index.items[idx]
         img_bgr = cv2.imread(rec["path"], cv2.IMREAD_COLOR)
         if img_bgr is None:
             continue
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        tfed = tf(image=img_rgb, mask=rec["mask"])
-        img_tf = tfed["image"]
-        mask_tf = tfed["mask"].astype(np.uint8)
+        mask = rec["mask"].astype(np.uint8)
 
         base = os.path.splitext(os.path.basename(rec["path"]))[0]
         safe_base = base.replace(" ", "_")
-        name = f"{i:05d}_{safe_base}"
+        group_key = f"{safe_base}__{idx:05d}"
 
-        img_path = os.path.join(img_dir, name + ".png")
-        mask_path = os.path.join(mask_dir, name + ".png")
-        combo_path = os.path.join(combo_dir, name + ".png")
-
-        cv2.imwrite(img_path, cv2.cvtColor(img_tf, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_PNG_COMPRESSION, 3])
-        cv2.imwrite(mask_path, mask_tf, [cv2.IMWRITE_PNG_COMPRESSION, 3])
-        color_map = _mask_to_color(mask_tf, seg_index.classes)
-        save_overlay(img_tf, color_map, combo_path, alpha=alpha, blur=0,
-                     add_legend=True, class_names=seg_index.classes, palette=LS_PALETTE)
-
-        meta.append({
+        sizes = _generate_crop_sizes(split_name, crop_count, crop_min, crop_max, rng)
+        duplicate_groups[group_key] = {
             "source_path": rec["path"],
-            "image": os.path.relpath(img_path, split_root),
-            "mask": os.path.relpath(mask_path, split_root),
-            "combo": os.path.relpath(combo_path, split_root),
-        })
+            "items": [],
+            "expected_count": int(len(sizes)),
+        }
 
+        H, W = mask.shape[:2]
+        generated_here = 0
+        for crop_idx, desired_side in enumerate(sizes):
+            x0, y0, crop_w, crop_h = _sample_crop_box(split_name, H, W, desired_side, rng)
+            x1 = min(W, x0 + crop_w)
+            y1 = min(H, y0 + crop_h)
+            crop_img = img_rgb[y0:y1, x0:x1]
+            crop_mask = mask[y0:y1, x0:x1]
+            if crop_img.size == 0 or crop_mask.size == 0:
+                continue
+
+            resized_img, resized_mask = _resize_image_and_mask(crop_img, crop_mask, size)
+            tfed = tf(image=resized_img, mask=resized_mask)
+            img_tf = tfed["image"]
+            mask_tf = tfed["mask"].astype(np.uint8)
+            if img_tf.dtype != np.uint8:
+                img_tf = np.clip(img_tf, 0, 255).astype(np.uint8)
+
+            name = f"{sample_counter:07d}_{safe_base}_c{crop_idx:02d}_s{crop_w}"
+            img_path = os.path.join(img_dir, name + ".png")
+            mask_path = os.path.join(mask_dir, name + ".png")
+            combo_path = os.path.join(combo_dir, name + ".png")
+
+            cv2.imwrite(img_path, cv2.cvtColor(img_tf, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_PNG_COMPRESSION, 3])
+            cv2.imwrite(mask_path, mask_tf, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+            color_map = _mask_to_color(mask_tf, seg_index.classes)
+            save_overlay(img_tf, color_map, combo_path, alpha=alpha, blur=0,
+                         add_legend=True, class_names=seg_index.classes, palette=LS_PALETTE)
+
+            rel_img = os.path.relpath(img_path, split_root)
+            rel_mask = os.path.relpath(mask_path, split_root)
+            rel_combo = os.path.relpath(combo_path, split_root)
+            meta.append({
+                "source_path": rec["path"],
+                "group_key": group_key,
+                "source_index": int(idx),
+                "crop_index": int(crop_idx),
+                "crop_bbox": [int(x0), int(y0), int(x1), int(y1)],
+                "crop_size": [int(crop_h), int(crop_w)],
+                "image": rel_img,
+                "mask": rel_mask,
+                "combo": rel_combo,
+            })
+            duplicate_groups[group_key]["items"].append({
+                "crop_index": int(crop_idx),
+                "image": rel_img,
+                "mask": rel_mask,
+                "combo": rel_combo,
+            })
+            sample_counter += 1
+            generated_here += 1
+
+        duplicate_groups[group_key]["actual_count"] = int(generated_here)
+        if generated_here != len(sizes):
+            mismatched.append((rec["path"], len(sizes), generated_here))
+
+    actual_total = len(meta)
+    expected_total = sum(info["expected_count"] for info in duplicate_groups.values())
+    if actual_total != expected_total:
+        raise RuntimeError(
+            f"[!] Split {split_name}: expected {expected_total} crops but generated {actual_total}."
+        )
+    if mismatched:
+        details = ", ".join([f"{os.path.basename(p)} (exp={exp}, got={got})" for p, exp, got in mismatched])
+        raise RuntimeError(f"[!] Split {split_name}: crop mismatch for: {details}")
+
+    def _count_png(path):
+        return len([f for f in os.listdir(path) if f.lower().endswith(".png")])
+
+    imgs_saved = _count_png(img_dir)
+    masks_saved = _count_png(mask_dir)
+    combos_saved = _count_png(combo_dir)
+    if not (imgs_saved == masks_saved == combos_saved == actual_total):
+        raise RuntimeError(
+            f"[!] Split {split_name}: file count mismatch (img={imgs_saved}, mask={masks_saved}, combo={combos_saved}, meta={actual_total})"
+        )
+
+    groups_serializable = []
+    for key, info in duplicate_groups.items():
+        items_sorted = sorted(info["items"], key=lambda x: x["crop_index"])
+        groups_serializable.append({
+            "group_key": key,
+            "source_path": info["source_path"],
+            "items": items_sorted,
+            "expected_count": int(info["expected_count"]),
+            "actual_count": int(info.get("actual_count", len(info["items"]))),
+        })
     meta_path = os.path.join(split_root, "meta.json")
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump({
             "classes": seg_index.classes,
             "items": meta,
+            "duplicates": groups_serializable,
+            "config": {
+                "split": split_name,
+                "target_size": int(size),
+                "norm_mode": norm_mode,
+                "crop": {
+                    "count": int(crop_count),
+                    "min_size": int(crop_min),
+                    "max_size": int(crop_max),
+                },
+                "augmentation_pipeline": tf_pipeline,
+                "expected_items": int(expected_total),
+                "actual_items": int(actual_total),
+            },
         }, f, ensure_ascii=False, indent=2)
 
 
@@ -304,10 +410,26 @@ def seg_prepare(args):
     tr_idx, va_idx = seg_index.split_by_images(val_ratio=args.val_ratio, seed=42)
     print(f"[i] подготовка train={len(tr_idx)}  val={len(va_idx)}")
 
-    _export_seg_split(seg_index, tr_idx, "train", args.prep_out_dir, args.seg_img_size,
+    train_crop_conf = {
+        "count": args.prep_train_crop_count,
+        "min_size": args.prep_train_crop_min,
+        "max_size": args.prep_train_crop_max,
+    }
+    val_crop_conf = {
+        "count": args.prep_val_crop_count,
+        "min_size": args.prep_val_crop_min,
+        "max_size": args.prep_val_crop_max,
+    }
+    test_crop_conf = {
+        "count": args.prep_test_crop_count,
+        "min_size": args.prep_test_crop_min,
+        "max_size": args.prep_test_crop_max,
+    }
+
+    _export_seg_split(seg_index, tr_idx, "train", args.prep_out_dir, args.ovseg_img_size,
                       norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha)
-    _export_seg_split(seg_index, va_idx, "val", args.prep_out_dir, args.seg_img_size,
-                      norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha)
+    _export_seg_split(seg_index, va_idx, "val", args.prep_out_dir, args.ovseg_img_size,
+                        norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha)
 
     if args.test_dir and os.path.isdir(args.test_dir):
         test_json = args.test_coco_json if args.test_coco_json else args.coco_json
@@ -320,147 +442,13 @@ def seg_prepare(args):
                 seg_index_test = SegIndex(args.test_dir, test_json, class_aliases=args.class_aliases)
                 test_idxs = list(range(len(seg_index_test.items)))
                 print(f"[i] подготовка test={len(test_idxs)}")
-                _export_seg_split(seg_index_test, test_idxs, "test", args.prep_out_dir, args.seg_img_size,
+                _export_seg_split(seg_index_test, test_idxs, "test", args.prep_out_dir, args.ovseg_img_size,
                                   norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha)
         except Exception as exc:
             print(f"[!] не удалось подготовить тестовый набор: {exc}")
 
     print("[OK] подготовка датасетов завершена")
 
-
-# ---------- train loops ----------
-def clip_train(args, device):
-    index = TileIndex(args.images_dir, args.coco_json,
-                      tile_size=args.tile_size, stride=args.stride,
-                      cover_thr=args.cover_thr, keep_empty=args.keep_empty,
-                      class_aliases=args.class_aliases)
-    tr_idx, va_idx = index.split_by_images(val_ratio=args.val_ratio, seed=42)
-    tr_idx = duplicate_positive_indices(index, tr_idx, args.pos_dup)
-
-    ds_tr = TilesDataset(index, tr_idx, augment=True,  img_size=args.img_size)
-    ds_va = TilesDataset(index, va_idx, augment=False, img_size=args.img_size)
-    dl_tr = DataLoader(ds_tr, batch_size=args.batch_size, shuffle=True,  num_workers=2, pin_memory=True)
-    dl_va = DataLoader(ds_va, batch_size=args.batch_size, shuffle=False, num_workers=2, pin_memory=True)
-
-    model = CLIPHead(model_name=args.clip_model, pretrained=args.clip_ckpt,
-                     n_classes=len(index.classes), device=device,
-                     head_type=args.head_type, head_hidden=args.head_hidden, head_dropout=args.head_dropout).to(device)
-    init_head_from_text(model.head, index.classes, model_name=args.clip_model, pretrained=args.clip_ckpt, device=device)
-
-    pos_w = compute_pos_weight(dl_tr, len(index.classes)).to(device)
-    crit  = nn.BCEWithLogitsLoss(pos_weight=pos_w)
-    opt   = torch.optim.AdamW(model.head.parameters(), lr=args.lr, weight_decay=1e-4)
-
-    out_dir = stamp_out_dir(args.out_dir)
-    best = -1.0
-    for ep in range(1, args.epochs+1):
-        model.train()
-        losses = []
-        for x, y, _ in tqdm(dl_tr, desc=f"CLIP Train {ep}/{args.epochs}", leave=False):
-            x = x.to(device); y = y.to(device)
-            logits, _ = model(x)
-            loss = crit(logits, y)
-            opt.zero_grad(); loss.backward(); opt.step()
-            losses.append(float(loss.item()))
-        _, macro, _, _ = evaluate_clip(model, dl_va, device, n_classes=len(index.classes), progress_desc=f"CLIP Val {ep}")
-        score = macro["ap"]
-        print(f"[i] ep{ep}: loss={np.mean(losses):.4f} | mAP={score:.4f}")
-        if score > best:
-            best = score
-            os.makedirs(os.path.join(out_dir, "checkpoints"), exist_ok=True)
-            torch.save({"state_dict": model.state_dict()}, os.path.join(out_dir, "checkpoints", "clip_head.pt"))
-    print("[OK] CLIP tile head trained.")
-    return
-
-
-def _eval_segmentation(model, dl, device, K_hint=None):
-    """Вычисляет confusion-matrix по всему даталоадеру и возвращает (hist, K)."""
-    model.eval()
-    hist = None
-    K = K_hint
-    with torch.no_grad():
-        # если не знаем K — возьмём с первого батча
-        for bi, (x, y, _) in enumerate(dl):
-            x = x.to(device, non_blocking=True)
-            y = y.to(device, non_blocking=True).long()
-            out = model(x)["out"]
-            if out.shape[-2:] != y.shape[-2:]:
-                out = F.interpolate(out, size=y.shape[-2:], mode="bilinear", align_corners=False)
-            if K is None:
-                K = out.shape[1]
-            pred = out.argmax(1)
-            h = seg_hist_np(pred.cpu().numpy(), y.cpu().numpy(), K)
-            hist = h if hist is None else (hist + h)
-    return hist, K
-
-
-def seg_train(args, device):
-    out_dir = stamp_out_dir(args.out_dir)
-    print(f"[i] results will be saved to: {out_dir}")
-    seg_index = SegIndex(args.images_dir, args.coco_json, class_aliases=args.class_aliases)
-    tr_idx_orig, va_idx = seg_index.split_by_images(val_ratio=args.val_ratio, seed=42)
-    tr_idx = []
-    for _ in range(max(1, args.seg_dup)):
-        tr_idx += tr_idx_orig
-
-    print(f"[i] seg train images: {len(tr_idx_orig)} (dup x{args.seg_dup} -> {len(tr_idx)}) | val images: {len(va_idx)}")
-    ds_tr = SegDataset(seg_index, tr_idx, train=True,  size=args.seg_img_size, norm_mode="imagenet")
-    ds_va = SegDataset(seg_index, va_idx, train=False, size=args.seg_img_size, norm_mode="imagenet")
-    dl_tr = DataLoader(ds_tr, batch_size=args.seg_batch_size, shuffle=True,  num_workers=2, pin_memory=True)
-    dl_va = DataLoader(ds_va, batch_size=args.seg_batch_size, shuffle=False, num_workers=2, pin_memory=True)
-
-    model = get_seg_model(args.seg_model, seg_index.num_classes, weights_tag=args.seg_weights).to(device)
-    model = maybe_compile(model, args.compile, mode=args.compile_mode, backend=args.compile_backend)
-
-    total, trainable = count_params(model)
-    print(f"[i] Seg model params: total={total:,.0f}  trainable={trainable:.0f}")
-
-    criterion = nn.CrossEntropyLoss(ignore_index=255)
-    opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=3e-4, weight_decay=1e-4)
-
-    ckpt_dir = os.path.join(out_dir, "checkpoints")
-    os.makedirs(ckpt_dir, exist_ok=True)
-    ckpt_mgr = TopKCheckpointManager(ckpt_dir, prefix="seg", k=5)
-
-    for ep in range(1, args.epochs+1):
-        model.train(); losses = []; seen = 0
-        for x, m, _ in tqdm(dl_tr, desc=f"Seg Train {ep}/{args.epochs}", leave=False):
-            x = x.to(device); m = m.to(device).long()
-            out = model(x)["out"]
-            if out.shape[-2:] != m.shape[-2:]:
-                out = F.interpolate(out, size=m.shape[-2:], mode="bilinear", align_corners=False)
-            loss = criterion(out, m)
-            opt.zero_grad(); loss.backward(); opt.step()
-            losses.append(float(loss.item())); seen += x.size(0)
-        avg_loss = (sum(losses) / max(1, len(losses)))
-        print(f"[ep {ep:03d}] train_loss={avg_loss:.4f}")
-
-        # validation metrics
-        val_loss, m, K = evaluate_segmentation_full(model, dl_va, device, criterion)
-        print(f"[ep {ep:03d}] val: loss={val_loss:.4f}  pixel_acc={m['pixel_acc']:.4f}  mIoU={m['miou']:.4f}  F1={m['f1_macro']:.4f}")
-
-        # optional train metrics on a fraction
-        frac = max(0.0, min(1.0, getattr(args, "train_miou_ratio", 0.0)))
-        if frac > 0.0:
-            max_batches = int(frac * len(dl_tr)) or 1
-            model.eval(); hist_tr = None; bcount = 0
-            with torch.no_grad():
-                for x, y, _ in dl_tr:
-                    x = x.to(device); y = y.to(device).long()
-                    out = model(x)["out"]
-                    if out.shape[-2:] != y.shape[-2:]:
-                        out = F.interpolate(out, size=y.shape[-2:], mode="bilinear", align_corners=False)
-                    pred = out.argmax(1)
-                    h = seg_hist_np(pred.cpu().numpy(), y.cpu().numpy(), K)
-                    hist_tr = h if hist_tr is None else (hist_tr + h)
-                    bcount += 1
-                    if bcount >= max_batches:
-                        break
-            mt = seg_metrics_from_hist(hist_tr, ignore_background=True)
-            tag = "all" if frac >= 1.0 else f"{int(frac*100)}%"
-            print(f"[ep {ep:03d}] train[{tag}]: mIoU={mt['miou']:.4f}  F1={mt['f1_macro']:.4f}")
-
-        ckpt_mgr.save(model.state_dict(), ep, val_loss, m, extra={"classes": seg_index.classes})
 
 
 def ovseg_train(args, device):
@@ -470,14 +458,22 @@ def ovseg_train(args, device):
 
     tr_idx_orig, va_idx = seg_index.split_by_images(val_ratio=args.val_ratio, seed=42)
     tr_idx = []
-    for _ in range(max(1, args.seg_dup)):
+    for _ in range(max(1, args.ovseg_dup)):
         tr_idx += tr_idx_orig
-    print(f"[i] seg train images: {len(tr_idx_orig)} (dup x{args.seg_dup} -> {len(tr_idx)}) | val images: {len(va_idx)}")
+    print(f"[i] training images: {len(tr_idx_orig)} (dup x{args.ovseg_dup} -> {len(tr_idx)}) | val images: {len(va_idx)}")
 
-    ds_tr = SegDataset(seg_index, tr_idx, train=True,  size=args.seg_img_size, norm_mode="clip")
-    ds_va = SegDataset(seg_index, va_idx, train=False, size=args.seg_img_size, norm_mode="clip")
-    dl_tr = DataLoader(ds_tr, batch_size=args.seg_batch_size, shuffle=True,  num_workers=2, pin_memory=True)
-    dl_va = DataLoader(ds_va, batch_size=args.seg_batch_size, shuffle=False, num_workers=2, pin_memory=True)
+    ds_tr = SegDataset(
+        seg_index,
+        tr_idx,
+        train=True,
+        size=args.ovseg_img_size,
+        norm_mode="clip",
+        aug_dump_dir=args.aug_dump_dir,
+        aug_dump_limit=args.aug_dump_limit,
+    )
+    ds_va = SegDataset(seg_index, va_idx, train=False, size=args.ovseg_img_size, norm_mode="clip")
+    dl_tr = DataLoader(ds_tr, batch_size=args.ovseg_batch_size, shuffle=True,  num_workers=2, pin_memory=True, persistent_workers=True, prefetch_factor=2)
+    dl_va = DataLoader(ds_va, batch_size=args.ovseg_batch_size, shuffle=False, num_workers=2, pin_memory=True, persistent_workers=True, prefetch_factor=2)
 
     model = OvSegModel(args.ovseg_model, args.ovseg_ckpt, seg_index.num_classes,
                        freeze_backbone=args.ovseg_freeze_backbone,
@@ -507,9 +503,21 @@ def ovseg_train(args, device):
     )
     criterion = nn.CrossEntropyLoss(ignore_index=255)
 
+
     ckpt_dir = os.path.join(out_dir, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
-    ckpt_mgr = TopKCheckpointManager(ckpt_dir, prefix="ovseg", k=5)
+    ckpt_dir_train = os.path.join(ckpt_dir, "best_train_loss")
+    ckpt_dir_val = os.path.join(ckpt_dir, "best_val_miou")
+    os.makedirs(ckpt_dir_train, exist_ok=True)
+    os.makedirs(ckpt_dir_val, exist_ok=True)
+    ckpt_mgr_train = TopKCheckpointManager(ckpt_dir_train, prefix="ovseg", k=5, mode="min")
+    ckpt_mgr_val = TopKCheckpointManager(ckpt_dir_val, prefix="ovseg", k=5, mode="max")
+
+    vis_root = os.path.join(out_dir, "vis")
+    os.makedirs(vis_root, exist_ok=True)
+    vis_count = max(1, min(args.epochs, 10))
+    vis_epochs = sorted({int(round(ep)) for ep in np.linspace(1, args.epochs, num=vis_count)})
+    vis_epochs = [ep for ep in vis_epochs if 1 <= ep <= args.epochs]
 
     for ep in range(1, args.epochs+1):
         model.train(); losses = []; seen = 0
@@ -549,99 +557,121 @@ def ovseg_train(args, device):
             tag = "all" if frac >= 1.0 else f"{int(frac*100)}%"
             print(f"[ep {ep:03d}] train[{tag}]: mIoU={mt['miou']:.4f}  F1={mt['f1_macro']:.4f}")
 
-        ckpt_mgr.save(model.state_dict(), ep, val_loss, m, extra={"classes": seg_index.classes})
+        extra_payload = {"classes": seg_index.classes}
+        ckpt_mgr_train.save(model.state_dict(), ep, avg_loss, m, extra=extra_payload)
+        ckpt_mgr_val.save(model.state_dict(), ep, m['miou'], m, extra=extra_payload)
 
+        if ep in vis_epochs:
+            has_val_samples = len(dl_va) > 0
+            has_train_samples = len(dl_tr) > 0
+            if not has_val_samples and not has_train_samples:
+                continue
 
-# ---------- inference ----------
-@torch.no_grad()
-def clip_infer_on_dir(args, device):
-    assert args.ckpt, "--ckpt is required for infer"
-    index = TileIndex(args.images_dir if args.images_dir else args.test_dir,
-                      args.coco_json, tile_size=args.tile_size, stride=args.stride,
-                      cover_thr=args.cover_thr, keep_empty=True, class_aliases=args.class_aliases)
+            ep_dir = os.path.join(vis_root, f"ep{ep:03d}")
+            os.makedirs(ep_dir, exist_ok=True)
+            ep_idx_dir = os.path.join(ep_dir, "idx")
+            ep_color_dir = os.path.join(ep_dir, "color")
+            ep_over_dir = os.path.join(ep_dir, "overlay")
+            if has_val_samples:
+                os.makedirs(ep_idx_dir, exist_ok=True)
+                os.makedirs(ep_color_dir, exist_ok=True)
+                os.makedirs(ep_over_dir, exist_ok=True)
 
-    model = CLIPHead(model_name=args.clip_model, pretrained=args.clip_ckpt,
-                     n_classes=len(index.classes), device=device,
-                     head_type=args.head_type, head_hidden=args.head_hidden, head_dropout=args.head_dropout).to(device)
-    sd = torch.load(args.ckpt, map_location="cpu")
-    model.load_state_dict(sd["state_dict"])
-    model.eval()
+            train_gt_dir = os.path.join(ep_dir, "train_gt")
+            train_pred_dir = os.path.join(ep_dir, "train_pred")
+            if has_train_samples:
+                os.makedirs(train_gt_dir, exist_ok=True)
+                os.makedirs(train_pred_dir, exist_ok=True)
 
-    out_dir = args.out_dir or os.path.join(DEFAULT_OUT_DIR, "clip_infer")
-    os.makedirs(out_dir, exist_ok=True)
-    out_idx   = os.path.join(out_dir, "clip_idx");   os.makedirs(out_idx, exist_ok=True)
-    out_color = os.path.join(out_dir, "clip_color"); os.makedirs(out_color, exist_ok=True)
-    out_over  = os.path.join(out_dir, "clip_over");  os.makedirs(out_over, exist_ok=True)
-    out_comp  = os.path.join(out_dir, "clip_comp");  os.makedirs(out_comp, exist_ok=True)
+            mean = np.array(CLIP_MEAN, dtype=np.float32)
+            std = np.array(CLIP_STD, dtype=np.float32)
+            model.eval()
+            with torch.no_grad():
+                if has_val_samples:
+                    max_vis_batches = min(2, max(1, len(dl_va)))
+                    saved = 0
+                    for b_idx, (x_va, _, paths) in enumerate(dl_va):
+                        if b_idx >= max_vis_batches:
+                            break
+                        logits = model(x_va.to(device))["out"]
+                        if logits.shape[-2:] != x_va.shape[-2:]:
+                            logits = F.interpolate(logits, size=x_va.shape[-2:], mode="bilinear", align_corners=False)
+                        probs = torch.softmax(logits, dim=1)
+                        for i in range(x_va.size(0)):
+                            img = x_va[i].detach().cpu().numpy().transpose(1, 2, 0)
+                            img = (img * std[None, None, :]) + mean[None, None, :]
+                            img = np.clip(img, 0.0, 1.0)
+                            img_rgb = (img * 255.0).astype(np.uint8)
 
-    class_names = index.classes
-    kernel_full = make_cosine_kernel(args.tile_size)
+                            acc = probs[i].detach().cpu().numpy()
 
-    test_dir = args.test_dir if args.test_dir else args.images_dir
-    img_paths = []
-    for root, _, files in os.walk(test_dir):
-        for f in files:
-            if f.lower().endswith((".jpg",".jpeg",".png",".bmp",".tif",".tiff")):
-                img_paths.append(os.path.join(root, f))
-    img_paths.sort()
+                            raw_path = paths[i]
+                            if args.images_dir and os.path.exists(args.images_dir):
+                                try:
+                                    rel = os.path.relpath(raw_path, args.images_dir)
+                                except ValueError:
+                                    rel = raw_path
+                            else:
+                                rel = raw_path
+                            safe_base = re.sub(r"[^0-9a-zA-Z._/-]", "_", rel)
+                            safe_base = safe_base.replace(os.sep, "__").replace("/", "__")
+                            safe_base = safe_base.replace("..", "__")
+                            safe_base = os.path.splitext(safe_base)[0]
+                            fname = f"{saved:04d}__{safe_base}"
 
-    for path in tqdm(img_paths, desc="CLIP infer"):
-        src = cv2.imread(path, cv2.IMREAD_COLOR)
-        if src is None:
-            print(f"[!] cannot read {path}")
-            continue
-        src = cv2.cvtColor(src, cv2.COLOR_BGR2RGB)
-        H, W = src.shape[:2]
-        acc = np.zeros((len(class_names), H, W), np.float32)
-        cnt = np.zeros((H, W), np.float32)
+                            idx_path = os.path.join(ep_idx_dir, fname + ".png")
+                            color_path = os.path.join(ep_color_dir, fname + ".png")
+                            over_path = os.path.join(ep_over_dir, fname + ".jpg")
 
-        batch_tiles, coords = [], []
-        for yy in range(0, max(1, H - args.tile_size + 1), args.stride):
-            for xx in range(0, max(1, W - args.tile_size + 1), args.stride):
-                raw = src[yy:yy+args.tile_size, xx:xx+args.tile_size]   # может быть "урезанным"
-                hh, ww = raw.shape[:2]
-                # для модели всё равно приводим к img_size
-                tile = cv2.resize(raw, (args.img_size, args.img_size), interpolation=cv2.INTER_AREA)
-                tile = (tile.astype(np.float32)/255.0 - np.array(CLIP_MEAN)[None,None,:]) / np.array(CLIP_STD)[None,None,:]
-                tile = torch.from_numpy(tile.transpose(2,0,1)).float()
-                batch_tiles.append(tile); coords.append((xx, yy, ww, hh))
-                if len(batch_tiles) >= args.batch_size:
-                    probs = infer_batch_clip(model, batch_tiles, device)
-                    for p, (xx2, yy2, ww2, hh2) in zip(probs, coords):
-                        k = kernel_full[:hh2, :ww2]
-                        acc[:, yy2:yy2+hh2, xx2:xx2+ww2] += p[:, None, None] * k
-                        cnt[yy2:yy2+hh2, xx2:xx2+ww2] += k
-                    batch_tiles, coords = [], []
+                            _, color_map = save_index_and_color_maps(acc, seg_index.classes, idx_path, color_path,
+                                                                     vis_thr=0.5, palette=LS_PALETTE, add_legend=True)
+                            save_overlay(img_rgb, color_map, over_path, alpha=args.vis_max_alpha, blur=args.vis_blur,
+                                         add_legend=True, class_names=seg_index.classes, palette=LS_PALETTE)
+                            saved += 1
 
-        if batch_tiles:
-            probs = infer_batch_clip(model, batch_tiles, device)
-            for p, (xx2, yy2, ww, hh) in zip(probs, coords):
-                k = kernel_full[:hh, :ww]
-                acc[:, yy2:yy2+hh, xx2:xx2+ww] += p[:, None, None] * k
-                cnt[yy2:yy2+hh, xx2:xx2+ww] += k
+                if has_train_samples:
+                    max_train_batches = min(2, max(1, len(dl_tr)))
+                    saved_train = 0
+                    for b_idx, (x_tr_vis, m_tr_vis, paths_tr) in enumerate(dl_tr):
+                        if b_idx >= max_train_batches:
+                            break
+                        logits_tr = model(x_tr_vis.to(device))["out"]
+                        if logits_tr.shape[-2:] != x_tr_vis.shape[-2:]:
+                            logits_tr = F.interpolate(logits_tr, size=x_tr_vis.shape[-2:], mode="bilinear", align_corners=False)
+                        probs_tr = torch.softmax(logits_tr, dim=1)
+                        preds_tr = probs_tr.argmax(1).cpu().numpy().astype(np.uint8)
+                        masks_tr = m_tr_vis.cpu().numpy().astype(np.uint8)
 
-        cnt[cnt == 0] = 1.0
-        acc /= cnt[None, :, :]
+                        for i in range(x_tr_vis.size(0)):
+                            raw_path = paths_tr[i]
+                            if args.images_dir and os.path.exists(args.images_dir):
+                                try:
+                                    rel = os.path.relpath(raw_path, args.images_dir)
+                                except ValueError:
+                                    rel = raw_path
+                            else:
+                                rel = raw_path
+                            safe_base = re.sub(r"[^0-9a-zA-Z._/-]", "_", rel)
+                            safe_base = safe_base.replace(os.sep, "__").replace("/", "__")
+                            safe_base = safe_base.replace("..", "__")
+                            safe_base = os.path.splitext(safe_base)[0]
+                            fname = f"{saved_train:04d}__{safe_base}"
 
-        save_composite_overlay(
-            src, acc, class_names,
-            os.path.join(out_comp, os.path.basename(path)),
-            palette=LS_PALETTE, vis_thr=args.vis_thr, alpha=args.vis_max_alpha, blur=args.vis_blur,
-            add_legend=args.vis_legend
-        )
+                            gt_mask = masks_tr[i].copy()
+                            gt_mask[gt_mask == 255] = 0
+                            gt_color = _mask_to_color(gt_mask, seg_index.classes)
+                            pred_color = _mask_to_color(preds_tr[i], seg_index.classes)
 
-        base = os.path.splitext(os.path.basename(path))[0]
-        idx_path   = os.path.join(out_idx,   base + ".png")
-        color_path = os.path.join(out_color, base + ".png")
-        over_path  = os.path.join(out_over,  base + ".jpg")
-        _, color_map = save_index_and_color_maps(acc, class_names, idx_path, color_path,
-                                                 vis_thr=args.vis_thr, palette=LS_PALETTE, add_legend=args.vis_legend)
-        save_overlay(src, color_map, over_path, alpha=args.vis_max_alpha, blur=args.vis_blur,
-                     add_legend=args.vis_legend, class_names=class_names, palette=LS_PALETTE)
+                            gt_path = os.path.join(train_gt_dir, fname + ".png")
+                            pred_path = os.path.join(train_pred_dir, fname + ".png")
 
+                            cv2.imwrite(gt_path, gt_color)
+                            cv2.imwrite(pred_path, pred_color)
+                            saved_train += 1
+            model.train()
 
-def seg_infer(args, device, use_ovseg=False):
-    assert args.ckpt, "--ckpt is required for seg_infer/ovseg_infer"
+def ovseg_infer(args, device):
+    assert args.ckpt, "--ckpt is required for ovseg_infer"
     payload = torch.load(args.ckpt, map_location="cpu")
     if isinstance(payload, dict) and "state_dict" in payload:
         state_dict = payload["state_dict"]
@@ -692,20 +722,17 @@ def seg_infer(args, device, use_ovseg=False):
         class_names = _default_class_order(num_classes)
         print("[i] falling back to default class names order")
 
-    if use_ovseg:
-        model = OvSegModel(args.ovseg_model, args.ovseg_ckpt, num_classes,
-                           freeze_backbone=False, decoder_channels=args.ovseg_decoder_ch,
-                           decoder_dropout=args.ovseg_decoder_dropout, device=device).to(device)
-    else:
-        model = get_seg_model(args.seg_model, num_classes, weights_tag=None).to(device)
+    model = OvSegModel(args.ovseg_model, args.ovseg_ckpt, num_classes,
+                       freeze_backbone=False, decoder_channels=args.ovseg_decoder_ch,
+                       decoder_dropout=args.ovseg_decoder_dropout, device=device).to(device)
     model.load_state_dict(state_dict)
     model.eval()
 
-    out_dir = args.out_dir or os.path.join(DEFAULT_OUT_DIR, "seg_infer")
-    os.makedirs(out_dir, exist_ok=True)
-    out_idx   = os.path.join(out_dir, "seg_idx");   os.makedirs(out_idx, exist_ok=True)
-    out_color = os.path.join(out_dir, "seg_color"); os.makedirs(out_color, exist_ok=True)
-    out_over  = os.path.join(out_dir, "seg_over");  os.makedirs(out_over, exist_ok=True)
+    base_out_dir = args.out_dir if args.out_dir else os.path.join(DEFAULT_OUT_DIR, "ovseg_infer")
+    out_dir = stamp_out_dir(base_out_dir)
+    out_idx   = os.path.join(out_dir, "ovseg_idx");   os.makedirs(out_idx, exist_ok=True)
+    out_color = os.path.join(out_dir, "ovseg_color"); os.makedirs(out_color, exist_ok=True)
+    out_over  = os.path.join(out_dir, "ovseg_over");  os.makedirs(out_over, exist_ok=True)
 
     test_dir = args.test_dir if args.test_dir else args.images_dir
     img_paths = []
@@ -715,7 +742,7 @@ def seg_infer(args, device, use_ovseg=False):
                 img_paths.append(os.path.join(root, f))
     img_paths.sort()
 
-    for path in tqdm(img_paths, desc="Seg infer"):
+    for path in tqdm(img_paths, desc="OVSeg infer"):
         src = cv2.imread(path, cv2.IMREAD_COLOR)
         if src is None:
             print(f"[!] cannot read {path}")
@@ -724,38 +751,47 @@ def seg_infer(args, device, use_ovseg=False):
         H, W = src.shape[:2]
 
         long_side = max(H, W)
-        scale = args.seg_img_size / long_side
+        scale = args.ovseg_img_size / long_side
         newH, newW = int(round(H*scale)), int(round(W*scale))
         img = cv2.resize(src, (newW, newH), interpolation=cv2.INTER_AREA)
-        padH = args.seg_img_size - newH
-        padW = args.seg_img_size - newW
+        padH = args.ovseg_img_size - newH
+        padW = args.ovseg_img_size - newW
         img = cv2.copyMakeBorder(img, 0, padH, 0, padW, cv2.BORDER_CONSTANT, value=(0,0,0))
 
-        if use_ovseg:
-            mean, std = np.array(CLIP_MEAN), np.array(CLIP_STD)
-        else:
-            mean, std = np.array(IMAGENET_MEAN), np.array(IMAGENET_STD)
+        mean, std = np.array(CLIP_MEAN), np.array(CLIP_STD)
+
 
         x = (img.astype(np.float32)/255.0 - mean[None,None,:]) / std[None,None,:]
         x = torch.from_numpy(x.transpose(2,0,1)).unsqueeze(0).float().to(device)
 
         with torch.no_grad():
-            out = model(x)["out"]
-            logits = F.interpolate(out, size=(newH, newW), mode="bilinear", align_corners=False)
+            logits = model(x)["out"]
+
+            logit_h, logit_w = logits.shape[-2:]
+            if padH > 0 or padW > 0:
+                valid_h = logit_h - int(round(logit_h * padH / args.ovseg_img_size))
+                valid_w = logit_w - int(round(logit_w * padW / args.ovseg_img_size))
+                valid_h = max(1, min(valid_h, logit_h))
+                valid_w = max(1, min(valid_w, logit_w))
+                logits = logits[..., :valid_h, :valid_w]
+
+            logits = F.interpolate(logits, size=(H, W), mode="bilinear", align_corners=False)
             pred = logits.argmax(1)[0].detach().cpu().numpy()  # 0..C
 
-        full = np.zeros((H, W), np.uint8)
-        full[:newH, :newW] = pred
+        base = os.path.splitext(os.path.basename(path))[0]
+        idx_path   = os.path.join(out_idx,   base + ".png")
+        color_path = os.path.join(out_color, base + ".png")
+        over_path  = os.path.join(out_over,  base + ".jpg")# классы 1..C
 
         base = os.path.splitext(os.path.basename(path))[0]
         idx_path   = os.path.join(out_idx,   base + ".png")
         color_path = os.path.join(out_color, base + ".png")
         over_path  = os.path.join(out_over,  base + ".jpg")
 
-        C = num_classes
-        acc = np.zeros((C, H, W), np.float32)
-        for c in range(1, C+1):
-            acc[c-1] = (full == c).astype(np.float32)
+        total_channels = num_classes + 1
+        acc = np.zeros((total_channels, H, W), np.float32)
+        for c in range(total_channels):
+            acc[c] = (pred == c).astype(np.float32)
         _, color_map = save_index_and_color_maps(acc, class_names, idx_path, color_path,
                                                  vis_thr=0.5, palette=LS_PALETTE, add_legend=args.vis_legend)
         save_overlay(src, color_map, over_path, alpha=args.vis_max_alpha, blur=args.vis_blur,
@@ -766,18 +802,11 @@ def main():
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    if args.mode == "clip_train":
-        clip_train(args, device); return
-    if args.mode == "infer":
-        clip_infer_on_dir(args, device); return
-    if args.mode == "seg_train":
-        seg_train(args, device); return
-    if args.mode == "seg_infer":
-        seg_infer(args, device, use_ovseg=False); return
     if args.mode == "ovseg_train":
         ovseg_train(args, device); return
     if args.mode == "ovseg_infer":
-        seg_infer(args, device, use_ovseg=True); return
+        ovseg_infer(args, device)
+        return
     if args.mode == "seg_prepare":
         seg_prepare(args); return
 

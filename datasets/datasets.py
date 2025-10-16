@@ -1,4 +1,4 @@
-import os, json, random
+import os, json, random, uuid
 from collections import defaultdict
 
 import numpy as np
@@ -13,7 +13,7 @@ from albumentations.pytorch import ToTensorV2
 from utils.utils import (
     CLIP_MEAN, CLIP_STD, IMAGENET_MEAN, IMAGENET_STD,
     DEFAULT_CATEGORIES, load_aliases_json, _norm_name, remap_id_to_canonical,
-    polygons_to_mask
+    polygons_to_mask, save_overlay, hex_to_bgr, LS_PALETTE
 )
 
 
@@ -21,19 +21,36 @@ def _resolve_coco_classes(coco: dict, aliases_tbl=None):
     """Return canonical class order and mapping from COCO ids -> canonical names."""
     aliases_tbl = aliases_tbl or {}
 
-    id_to_name = {c["id"]: c.get("name", f"cat_{c['id']}") for c in coco.get("categories", [])}
-    id_to_norm, present_names = remap_id_to_canonical(id_to_name, aliases_tbl, fallback=DEFAULT_CATEGORIES)
+    categories = coco.get("categories", []) or []
+    id_to_name = {c["id"]: c.get("name", f"cat_{c['id']}") for c in categories}
+
     norm2canon = {_norm_name(v): v for v in DEFAULT_CATEGORIES.values()}
 
+    observed = []  # (cid, canonical_name)
     coco_id_to_canon = {}
-    for cid, nrm in id_to_norm.items():
-        if nrm in present_names and nrm in norm2canon:
-            coco_id_to_canon[cid] = norm2canon[nrm]
 
-    canon_order = [
-        DEFAULT_CATEGORIES[k] for k in sorted(DEFAULT_CATEGORIES.keys())
-        if DEFAULT_CATEGORIES[k] in coco_id_to_canon.values()
-    ]
+    for cid, raw_name in id_to_name.items():
+        norm = _norm_name(raw_name)
+        if norm in aliases_tbl:
+            canon_norm = aliases_tbl[norm]
+            canon = norm2canon.get(canon_norm, canon_norm)
+        elif norm in norm2canon:
+            canon = norm2canon[norm]
+        else:
+            canon = raw_name.strip() or f"cat_{cid}"
+        coco_id_to_canon[cid] = canon
+        observed.append((cid, canon))
+
+    canon_order = []
+    present = {name for _, name in observed}
+    for key in sorted(DEFAULT_CATEGORIES.keys()):
+        nm = DEFAULT_CATEGORIES[key]
+        if nm in present and nm not in canon_order:
+            canon_order.append(nm)
+    for _, name in observed:
+        if name not in canon_order:
+            canon_order.append(name)
+
     return canon_order, coco_id_to_canon
 
 
@@ -86,137 +103,6 @@ def _resolve_image_path(images_dir, im):
     except Exception:
         pass
     return None
-
-
-# ---------- Tile (multi-label classification) ----------
-
-class TileIndex:
-    def __init__(self, images_dir, coco_json, tile_size=768, stride=512,
-                 cover_thr=0.01, keep_empty=True, class_aliases=""):
-        self.images_dir = images_dir
-        self.tile_size = int(tile_size)
-        self.stride = int(stride)
-
-        with open(coco_json, "r", encoding="utf-8") as f:
-            coco = json.load(f)
-
-        # categories -> canonical
-        if "categories" in coco and coco["categories"]:
-            raw_map = {c["id"]: c.get("name", f"cat_{c['id']}") for c in coco["categories"]}
-        else:
-            # если категорий нет — используем DEFAULT_CATEGORIES (id: name)
-            raw_map = DEFAULT_CATEGORIES.copy()
-
-        aliases = load_aliases_json(class_aliases)
-        norm_map = {cid: _norm_name(n) for cid, n in raw_map.items()}
-        canon_map, present_names = remap_id_to_canonical(norm_map, aliases, DEFAULT_CATEGORIES)
-
-        # Стабильный порядок по DEFAULT_CATEGORIES, но только присутствующие
-        canon_order = [DEFAULT_CATEGORIES[k] for k in sorted(DEFAULT_CATEGORIES.keys())
-                       if DEFAULT_CATEGORIES[k] in present_names]
-        self.class_ids = [cid for cid, nm in canon_map.items() if nm in set(canon_order)]
-        self.classes = canon_order
-        self.C = len(self.classes)
-        self.num_classes = self.C
-
-        # группируем аннотации по изображению
-        anns_by_img = defaultdict(list)
-        for a in coco.get("annotations", []):
-            if a.get("iscrowd", 0) == 1:
-                continue
-            if a.get("category_id") not in canon_map:
-                continue
-            anns_by_img[a["image_id"]].append(a)
-
-        # оставляем только изображения, по которым есть аннотации
-        self.images = [im for im in coco.get("images", []) if im["id"] in anns_by_img]
-        assert len(self.images) > 0, "No annotated images found in COCO."
-
-        self.records = []
-        # индексируем
-        for im in tqdm(self.images, desc="Index tiles", unit="img"):
-            path = _resolve_image_path(images_dir, im)
-            if path is None:
-                continue
-
-            H, W = int(im["height"]), int(im["width"])
-
-            # собираем полные маски классов
-            class_masks = {cid: np.zeros((H, W), np.uint8) for cid in self.class_ids}
-            for a in anns_by_img[im["id"]]:
-                cid = a["category_id"]
-                seg = a.get("segmentation", [])
-                if isinstance(seg, list) and seg and isinstance(seg[0], list):
-                    class_masks[cid] |= polygons_to_mask(seg, H, W, value=1)
-
-            # тайлим (вынесено ВНЕ цикла по аннотациям!)
-            for y in range(0, max(1, H - self.tile_size + 1), self.stride):
-                for x in range(0, max(1, W - self.tile_size + 1), self.stride):
-                    tile_h = min(self.tile_size, H - y)
-                    tile_w = min(self.tile_size, W - x)
-                    tile_area = float(tile_h * tile_w)
-                    y2, x2 = y + tile_h, x + tile_w
-
-                    labels = np.zeros(self.C, np.float32)
-                    # canon_order ↔ self.class_ids маппятся по позиции в self.class_ids
-                    for j, cid in enumerate(self.class_ids):
-                        inter = class_masks[cid][y:y2, x:x2].sum()
-                        if inter / tile_area >= cover_thr:
-                            labels[j] = 1.0
-
-                    if keep_empty or labels.sum() > 0:
-                        # сохраняем фактическую ширину тайла (для краёв); при желании можно добавить и высоту
-                        self.records.append((im["id"], path, x, y, tile_w, labels))
-
-        self.image_ids = sorted({r[0] for r in self.records})
-
-    def split_by_images(self, val_ratio=0.25, seed=42):
-        rng = random.Random(seed)
-        ids = self.image_ids[:]
-        rng.shuffle(ids)
-        n_val = max(1, int(round(len(ids) * val_ratio)))
-        val_ids = set(ids[:n_val])
-        train_idx, val_idx = [], []
-        for i, rec in enumerate(self.records):
-            img_id = rec[0]
-            (val_idx if img_id in val_ids else train_idx).append(i)
-        return train_idx, val_idx
-
-
-class TilesDataset(Dataset):
-    def __init__(self, index: TileIndex, indices, augment=True, img_size=224):
-        self.index = index
-        self.idxs = list(indices)
-        self.size = img_size
-        if augment:
-            self.tf = A.Compose([
-                A.HorizontalFlip(p=0.5),
-                A.Affine(rotate=(-10, 10), fit_output=False, border_mode=cv2.BORDER_REFLECT, p=0.5),
-                A.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.10, hue=0.02, p=0.3),
-                A.GaussianBlur(blur_limit=(3, 5), p=0.15),
-                A.Resize(self.size, self.size, interpolation=cv2.INTER_AREA),
-                A.Normalize(mean=CLIP_MEAN, std=CLIP_STD),
-                ToTensorV2()
-            ])
-        else:
-            self.tf = A.Compose([
-                A.Resize(self.size, self.size, interpolation=cv2.INTER_AREA),
-                A.Normalize(mean=CLIP_MEAN, std=CLIP_STD),
-                ToTensorV2()
-            ])
-
-    def __len__(self):
-        return len(self.idxs)
-
-    def __getitem__(self, i):
-        rec = self.index.records[self.idxs[i]]
-        _, path, x, y, ts, labels = rec
-        img = cv2.imread(path, cv2.IMREAD_COLOR)
-        tile = img[y:y + ts, x:x + ts]
-        tile = cv2.cvtColor(tile, cv2.COLOR_BGR2RGB)
-        tile = self.tf(image=tile)["image"]
-        return tile, torch.from_numpy(labels), (path, x, y, ts)
-
 
 # ----------------------------- Segmentation index -----------------------------
 
@@ -292,22 +178,22 @@ class SegIndex:
         tr_idx = sorted(ids[val_n:])
         return tr_idx, va_idx
 
-
-# ----------------------------- Dataset wrapper -----------------------------
-
-def _build_tf(train: bool, size: int, norm_mode: str, include_normalize: bool = True):
-    if train:
+def build_prepare_tf(split: str, norm_mode: str, include_normalize: bool = True):
+    split = (split or "train").lower()
+    if split == "train":
         aug = [
-            A.LongestMaxSize(max_size=size),
-            A.PadIfNeeded(min_height=size, min_width=size, border_mode=cv2.BORDER_CONSTANT),  # без value
             A.HorizontalFlip(p=0.5),
-            A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.2, rotate_limit=15, p=0.5,
-                               border_mode=cv2.BORDER_REFLECT_101),
+            A.VerticalFlip(p=0.1),
+            A.RandomRotate90(p=0.2),
+            A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.5),
+            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.3),
+            A.GaussianBlur(blur_limit=(3, 5), p=0.1),
         ]
-    else:
+    elif split == "val":
+        aug = []
+    else:  # test and fallback
         aug = [
-            A.LongestMaxSize(max_size=size),
-            A.PadIfNeeded(min_height=size, min_width=size, border_mode=cv2.BORDER_CONSTANT),  # без value
+            A.GaussianBlur(blur_limit=(3, 3), p=0.05),
         ]
     if include_normalize:
         if norm_mode == "clip":
@@ -315,13 +201,107 @@ def _build_tf(train: bool, size: int, norm_mode: str, include_normalize: bool = 
         else:
             aug.append(A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD, max_pixel_value=255.0))
     return A.Compose(aug)
+# ----------------------------- Dataset wrapper -----------------------------
 
+def _build_tf(train: bool, size: int, norm_mode: str, include_normalize: bool = True):
+    if train:
+        resize_or_crop = A.OneOf([
+            A.RandomResizedCrop(
+                height=size,
+                width=size,
+                scale=(0.4, 1.0),
+                ratio=(0.75, 1.33),
+                interpolation=cv2.INTER_LINEAR,
+            ),
+            A.Compose([
+                A.LongestMaxSize(max_size=size),
+                A.PadIfNeeded(
+                    min_height=size,
+                    min_width=size,
+                    border_mode=cv2.BORDER_CONSTANT,
+                ),
+            ]),
+        ], p=1.0)
+
+        color_aug = A.OneOf([
+            A.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.25, hue=0.1, p=1.0),
+            A.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=1.0),
+            A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=15, val_shift_limit=10, p=1.0),
+            A.RGBShift(r_shift_limit=10, g_shift_limit=10, b_shift_limit=10, p=1.0),
+        ], p=0.7)
+
+        aug = [
+            resize_or_crop,
+            A.HorizontalFlip(p=0.5),
+            A.VerticalFlip(p=0.1),
+            A.ShiftScaleRotate(
+                shift_limit=0.05,
+                scale_limit=0.2,
+                rotate_limit=15,
+                p=0.5,
+                border_mode=cv2.BORDER_REFLECT_101,
+            ),
+            color_aug,
+            A.GaussNoise(var_limit=(10.0, 30.0), p=0.1),
+        ]
+    else:
+        aug = [
+            A.LongestMaxSize(max_size=size),
+            A.PadIfNeeded(min_height=size, min_width=size, border_mode=cv2.BORDER_CONSTANT),  # без value
+        ]
+    tf = A.ReplayCompose(aug)
+    normalize = None
+    if include_normalize:
+        if norm_mode == "clip":
+            normalize = A.Normalize(mean=CLIP_MEAN, std=CLIP_STD, max_pixel_value=255.0)
+        else:
+            normalize = A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD, max_pixel_value=255.0)
+    return tf, normalize
+
+def _mask_to_color(mask: np.ndarray, class_names):
+    color = np.zeros((mask.shape[0], mask.shape[1], 3), np.uint8)
+    for idx, name in enumerate(class_names, start=1):
+        color[mask == idx] = hex_to_bgr(LS_PALETTE.get(name, "#FF00FF"))
+    return color
+
+
+def _sanitize_name(name: str) -> str:
+    chars = []
+    for ch in name:
+        if ch.isalnum() or ch in ("-", "_"):
+            chars.append(ch)
+        else:
+            chars.append("_")
+    return "".join(chars)
+
+
+def _to_serializable(obj):
+    if isinstance(obj, dict):
+        return {k: _to_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_serializable(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    return obj
 class SegDataset(Dataset):
-    def __init__(self, seg_index: SegIndex, idxs, train: bool, size: int, norm_mode: str = "clip"):
+    def __init__(self, seg_index: SegIndex, idxs, train: bool, size: int, norm_mode: str = "clip",
+                 aug_dump_dir: str = "", aug_dump_limit: int = 0):
         self.si = seg_index
         self.idxs = list(idxs)
-        self.tf = _build_tf(train, size, norm_mode, include_normalize=True)
+        self.tf, self.normalize_tf = _build_tf(train, size, norm_mode, include_normalize=True)
         self.to_tensor = ToTensorV2(transpose_mask=False)
+        self.dump_dir = aug_dump_dir or ""
+        self.dump_limit = int(aug_dump_limit) if aug_dump_limit else 0
+        self.dump_enabled = bool(self.dump_dir and self.dump_limit > 0)
+        self._dump_counter = 0
+        if self.dump_enabled:
+            os.makedirs(self.dump_dir, exist_ok=True)
 
     def __len__(self):
         return len(self.idxs)
@@ -332,7 +312,57 @@ class SegDataset(Dataset):
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         mask = rec["mask"]
         tfed = self.tf(image=img, mask=mask)
-        x = tfed["image"]
-        m = tfed["mask"].astype(np.int64)  # 0..C
-        x = self.to_tensor(image=x)["image"]
-        return x, torch.from_numpy(m), rec["path"]
+        aug_img = tfed["image"]
+        aug_mask = tfed["mask"].astype(np.uint8)
+        replay = tfed.get("replay")
+
+        norm_img = aug_img
+        if self.normalize_tf is not None:
+            norm_img = self.normalize_tf(image=aug_img)["image"]
+
+        norm_img = np.ascontiguousarray(norm_img)
+
+        x = self.to_tensor(image=norm_img)["image"]
+        m = torch.from_numpy(aug_mask.astype(np.int64, copy=False))
+
+        if self.dump_enabled and self._dump_counter < self.dump_limit:
+            self._dump_sample(rec["path"], img, aug_img, aug_mask, replay)
+
+        return x, m, rec["path"]
+
+    def _dump_sample(self, source_path, original_img, aug_img, aug_mask, replay):
+        idx = self._dump_counter
+        self._dump_counter += 1
+        base = os.path.splitext(os.path.basename(source_path))[0]
+        safe_base = _sanitize_name(base)
+        uid = uuid.uuid4().hex[:8]
+        prefix = f"{idx:04d}_{safe_base}_{uid}"
+
+        image_path = os.path.join(self.dump_dir, prefix + "_image.png")
+        mask_path = os.path.join(self.dump_dir, prefix + "_mask.png")
+        overlay_path = os.path.join(self.dump_dir, prefix + "_overlay.png")
+        meta_path = os.path.join(self.dump_dir, prefix + "_meta.json")
+
+        aug_vis = aug_img
+        if aug_vis.dtype != np.uint8:
+            aug_vis = np.clip(aug_vis, 0, 255).astype(np.uint8)
+        cv2.imwrite(image_path, cv2.cvtColor(aug_vis, cv2.COLOR_RGB2BGR))
+        cv2.imwrite(mask_path, aug_mask)
+
+        color_map = _mask_to_color(aug_mask, self.si.classes)
+        save_overlay(aug_vis, color_map, overlay_path, alpha=0.6, blur=0,
+                     add_legend=True, class_names=self.si.classes, palette=LS_PALETTE)
+
+        orig_h, orig_w = original_img.shape[:2]
+        aug_h, aug_w = aug_mask.shape[:2]
+        meta = {
+            "source_path": source_path,
+            "image_path": image_path,
+            "mask_path": mask_path,
+            "overlay_path": overlay_path,
+            "original_size": [int(orig_h), int(orig_w)],
+            "augmented_size": [int(aug_h), int(aug_w)],
+            "replay": _to_serializable(replay) if replay is not None else None,
+        }
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)

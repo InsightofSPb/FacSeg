@@ -1,14 +1,11 @@
-import os, json, math, hashlib
+import os, json
 from datetime import datetime
-from collections import defaultdict
 
 import numpy as np
 import cv2
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from sklearn.metrics import average_precision_score, roc_auc_score
+
 
 # ---------- stats & palettes ----------
 CLIP_MEAN = [0.48145466, 0.4578275, 0.40821073]
@@ -79,13 +76,80 @@ def safe_path(images_dir, file_name):
         p = os.path.join(images_dir, file_name)
     return p if os.path.isfile(p) else None
 
+def _decode_rle_counts(counts, size):
+    """Decode an uncompressed RLE counts list into a mask."""
+    h, w = map(int, size)
+    total = h * w
+    flat = np.zeros(total, dtype=np.uint8)
+    idx = 0
+    val = 0
+    for c in counts:
+        c = abs(int(c))
+        end = min(idx + c, total)
+        if val == 1 and end > idx:
+            flat[idx:end] = 1
+        idx = end
+        if idx >= total:
+            break
+        val = 1 - val
+    return flat.reshape((h, w), order="F")
+
+
+def _decode_rle(segmentation, H, W):
+    size = segmentation.get("size", [H, W])
+    counts = segmentation.get("counts", [])
+    if isinstance(counts, list):
+        return _decode_rle_counts(counts, size)
+    if isinstance(counts, str):
+        # try to use pycocotools if available (supports compressed RLE)
+        try:
+            from pycocotools import mask as mask_utils  # type: ignore
+        except ImportError:
+            # fallback: decode compressed string per COCO spec
+            counts_bytes = counts.encode("utf-8")
+            nums = []
+            value = 0
+            shift = 0
+            for ch in counts_bytes:
+                ch -= 48
+                value |= (ch & 0x1F) << shift
+                shift += 5
+                if ch & 0x20:
+                    continue
+                if ch & 0x10:
+                    value = -value
+                nums.append(value)
+                value = 0
+                shift = 0
+            return _decode_rle_counts(nums, size)
+        else:
+            decoded = mask_utils.decode({"counts": counts, "size": size})
+            return decoded.astype(np.uint8)
+    return np.zeros((size[0], size[1]), np.uint8)
+
 def polygons_to_mask(segmentation, H, W, value=1):
     mask = np.zeros((H, W), np.uint8)
+    if segmentation is None:
+        return mask
     if isinstance(segmentation, list):
-        for poly in segmentation:
-            pts = np.array(poly, np.float32).reshape(-1, 2)
+        if not segmentation:
+            return mask
+        if isinstance(segmentation[0], (list, tuple)):
+            for poly in segmentation:
+                pts = np.array(poly, np.float32).reshape(-1, 2)
+                pts = np.round(pts).astype(np.int32)
+                if len(pts) >= 3:
+                    cv2.fillPoly(mask, [pts], value)
+        elif isinstance(segmentation[0], dict):
+            for seg in segmentation:
+                mask = np.maximum(mask, _decode_rle(seg, H, W) * value)
+        else:
+            pts = np.array(segmentation, np.float32).reshape(-1, 2)
             pts = np.round(pts).astype(np.int32)
-            cv2.fillPoly(mask, [pts], value)
+            if len(pts) >= 3:
+                cv2.fillPoly(mask, [pts], value)
+    elif isinstance(segmentation, dict):
+        mask = np.maximum(mask, _decode_rle(segmentation, H, W) * value)
     return mask
 
 def format_int(n: int) -> str:
@@ -115,64 +179,45 @@ def stamp_out_dir(base):
     os.makedirs(os.path.join(out, "vis"), exist_ok=True)
     return out
 
-# ---------- CLIP helpers ----------
-@torch.no_grad()
-def infer_batch_clip(model, tiles_batch, device):
-    if isinstance(tiles_batch, list):
-        x = torch.stack(tiles_batch, dim=0).to(device, non_blocking=True)
+
+def save_index_and_color_maps(acc_C_hw, class_names, idx_path, color_path,
+                              vis_thr=0.5, palette=LS_PALETTE, add_legend=True):
+    if isinstance(acc_C_hw, torch.Tensor):
+        acc = acc_C_hw.detach().cpu().numpy()
     else:
-        x = tiles_batch.to(device, non_blocking=True)
-    logits, _ = model(x)
-    probs = torch.sigmoid(logits).detach().cpu().numpy()
-    return probs
+        acc = np.asarray(acc_C_hw)
 
-def compute_pos_weight(dl_tr, n_classes):
-    pos = torch.zeros(n_classes, dtype=torch.float32)
-    cnt = 0
-    for _, y, _ in dl_tr:
-        pos += y.sum(dim=0); cnt += y.shape[0]
-    pos = torch.clamp(pos, min=1.0)
-    neg = torch.clamp(cnt - pos, min=1.0)
-    return neg / pos
+    if acc.ndim != 3:
+        raise ValueError("acc_C_hw must have shape (C, H, W)")
 
-def evaluate_clip(model, dl, device, n_classes, progress_desc="CLIP Val"):
-    model.eval()
-    ys, ps = [], []
-    for x, y, _ in dl:
-        x = x.to(device); y = y.to(device)
-        with torch.no_grad():
-            logits, _ = model(x)
-            prob = torch.sigmoid(logits)
-        ys.append(y.detach().cpu().numpy())
-        ps.append(prob.detach().cpu().numpy())
-    Y = np.concatenate(ys, 0); P = np.concatenate(ps, 0)
-    ap, auc = [], []
-    for c in range(n_classes):
-        try: ap.append(float(average_precision_score(Y[:, c], P[:, c])))
-        except Exception: ap.append(float("nan"))
-        try: auc.append(float(roc_auc_score(Y[:, c], P[:, c])))
-        except Exception: auc.append(float("nan"))
-    macro = {"ap": np.nanmean(ap), "auc": np.nanmean(auc)}
-    return P, macro, ap, auc
+    C, H, W = acc.shape
+    idx = acc.argmax(0).astype(np.uint8)
+    scores = acc.max(0)
 
-# ---------- kernels & viz ----------
-def make_cosine_kernel(ts: int):
-    wx = 0.5 * (1 - np.cos(2 * np.pi * (np.arange(ts) + 0.5) / ts))
-    wy = wx.copy()
-    k = np.outer(wy, wx).astype(np.float32)
-    k /= k.max()
-    return k
+    has_background = (C == len(class_names) + 1)
 
-def save_index_and_color_maps(acc_C_hw, class_names, idx_path, color_path, vis_thr=0.5, palette=LS_PALETTE, add_legend=True):
-    C, H, W = acc_C_hw.shape
-    idx = acc_C_hw.argmax(0).astype(np.uint8) + 1  # 1..C
+    if vis_thr is not None:
+        if has_background:
+            idx[scores < vis_thr] = 0
+        scores_mask = (scores >= vis_thr)
+    else:
+        scores_mask = None
+
     color = np.zeros((H, W, 3), np.uint8)
-    for c, name in enumerate(class_names, start=1):
-        color[idx == c] = hex_to_bgr(palette.get(name, "#FF00FF"))
+    start_channel = 1 if has_background else 0
+    max_classes = min(len(class_names), C - start_channel)
+
+    for offset, name in enumerate(class_names[:max_classes], start=start_channel):
+        mask = (idx == offset)
+        if scores_mask is not None:
+            mask = np.logical_and(mask, scores_mask)
+        if not np.any(mask):
+            continue
+        color[mask] = hex_to_bgr(palette.get(name, "#FF00FF"))
+
     cv2.imwrite(idx_path, idx)
     cv2.imwrite(color_path, color)
     return idx, color
-
 def _draw_legend(canvas, class_names, palette, alpha_bg=0.6):
     h, w = canvas.shape[:2]
     pad, sw, sh = 8, 22, 18
@@ -235,28 +280,47 @@ def seg_hist_np(pred, target, num_classes: int, ignore_index: int = 255):
     return hist
 
 def seg_metrics_from_hist(hist: np.ndarray, ignore_background: bool = True):
-    """
-    Из confusion matrix считает:
-      - pixel_acc (по всем классам, включая фон)
-      - per-class IoU, mIoU
-      - per-class F1, macro-F1
-    Если ignore_background=True — IoU/F1 считаются по классам 1..K-1.
+    """Compute segmentation metrics from a confusion matrix.
+
+    Args:
+        hist: Confusion matrix of shape (K, K) where rows are GT classes and
+            columns are predictions.
+        ignore_background: If ``True`` the background class (index 0) is
+            excluded from IoU/F1 averaging, but its interactions still count as
+            false positives/negatives for the foreground classes.
     """
     eps = 1e-7
+    hist = np.asarray(hist, dtype=np.float64)
     K = hist.shape[0]
-    acc = float(hist.trace()) / float(hist.sum() + eps)
 
-    if ignore_background and K > 1:
-        h = hist[1:, 1:].astype(np.float64)
+    total = float(hist.sum())
+    acc = float(hist.trace()) / float(total + eps)
+
+    if ignore_background:
+        if K <= 1:
+            iou_per_class = np.array([], dtype=np.float64)
+            f1_per_class = np.array([], dtype=np.float64)
+        else:
+            tp = np.diag(hist)[1:]
+            # Предсказания класса c (включая фон как ложные срабатывания)
+            fp = hist[:, 1:].sum(0) - tp
+            # Пиксели класса c в разметке, предсказанные чем-то ещё (включая фон)
+            fn = hist[1:, :].sum(1) - tp
+
+            denom_iou = tp + fp + fn + eps
+            iou_per_class = np.divide(tp, denom_iou, out=np.zeros_like(tp), where=denom_iou > 0)
+
+            denom_f1 = 2.0 * tp + fp + fn + eps
+            f1_per_class = np.divide(2.0 * tp, denom_f1, out=np.zeros_like(tp), where=denom_f1 > 0)
     else:
-        h = hist.astype(np.float64)
+        tp = np.diag(hist)
+        fp = hist.sum(0) - tp
+        fn = hist.sum(1) - tp
+        denom_iou = tp + fp + fn + eps
+        iou_per_class = np.divide(tp, denom_iou, out=np.zeros_like(tp), where=denom_iou > 0)
 
-    tp = np.diag(h)
-    fp = h.sum(0) - tp
-    fn = h.sum(1) - tp
-
-    iou_per_class = tp / (tp + fp + fn + eps)
-    f1_per_class  = 2.0 * tp / (2.0 * tp + fp + fn + eps)
+        denom_f1 = 2.0 * tp + fp + fn + eps
+        f1_per_class = np.divide(2.0 * tp, denom_f1, out=np.zeros_like(tp), where=denom_f1 > 0)
 
     miou = float(np.nanmean(iou_per_class)) if iou_per_class.size else 0.0
     f1_macro = float(np.nanmean(f1_per_class)) if f1_per_class.size else 0.0

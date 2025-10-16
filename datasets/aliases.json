@@ -1,19 +1,16 @@
 {
   "CRACK": [
+    "CRACK",
     "CRACKS",
-    "FISSURE",
-    "裂缝",
-    "FRACTURE",
-    "CRACK_LINE"
+    "ALLIGATOR CRACK"
   ],
   "SPALLING": [
-    "SCALING",
-    "CONCRETE_SPALL",
-    "EXFOLIATION",
-    "SURFACE_SPALL"
+    "SPALLING",
+    "SCALING"
   ],
   "DELAMINATION": [
     "DELAM",
+    "DELAMINATION",
     "PEELING_PLASTER",
     "LAYER_SEPARATION"
   ],
@@ -25,24 +22,19 @@
     "BROKEN_PIECE"
   ],
   "WATER_STAIN": [
-    "DAMP_STAIN",
-    "MOISTURE_STAIN",
-    "WET_MARK",
-    "WATERMARK"
+    "WETSPOT",
+    "WET SPOT",
+    "WEATHERING"
   ],
   "EFFLORESCENCE": [
+    "EFFLORESCENCE",
     "SALT",
     "WHITE_SALT",
     "SALT_STAIN",
     "SALTPETER",
     "BLOOM"
   ],
-  "CORROSION": [
-    "RUST",
-    "RUST_STAIN",
-    "OXIDATION",
-    "CORRODED"
-  ],
+
   "ORNAMENT_INTACT": [
     "INTACT",
     "GOOD_ORNAMENT",
