@@ -1,4 +1,4 @@
-import os, json, random
+import os, json, random, uuid
 from collections import defaultdict
 
 import numpy as np
@@ -13,7 +13,7 @@ from albumentations.pytorch import ToTensorV2
 from utils.utils import (
     CLIP_MEAN, CLIP_STD, IMAGENET_MEAN, IMAGENET_STD,
     DEFAULT_CATEGORIES, load_aliases_json, _norm_name, remap_id_to_canonical,
-    polygons_to_mask
+    polygons_to_mask, save_overlay, hex_to_bgr, LS_PALETTE
 )
 
 
@@ -217,19 +217,59 @@ def _build_tf(train: bool, size: int, norm_mode: str, include_normalize: bool = 
             A.LongestMaxSize(max_size=size),
             A.PadIfNeeded(min_height=size, min_width=size, border_mode=cv2.BORDER_CONSTANT),  # без value
         ]
+    tf = A.ReplayCompose(aug)
+    normalize = None
     if include_normalize:
         if norm_mode == "clip":
-            aug.append(A.Normalize(mean=CLIP_MEAN, std=CLIP_STD, max_pixel_value=255.0))
+            normalize = A.Normalize(mean=CLIP_MEAN, std=CLIP_STD, max_pixel_value=255.0)
         else:
-            aug.append(A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD, max_pixel_value=255.0))
-    return A.Compose(aug)
+            normalize = A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD, max_pixel_value=255.0)
+    return tf, normalize
 
+def _mask_to_color(mask: np.ndarray, class_names):
+    color = np.zeros((mask.shape[0], mask.shape[1], 3), np.uint8)
+    for idx, name in enumerate(class_names, start=1):
+        color[mask == idx] = hex_to_bgr(LS_PALETTE.get(name, "#FF00FF"))
+    return color
+
+
+def _sanitize_name(name: str) -> str:
+    chars = []
+    for ch in name:
+        if ch.isalnum() or ch in ("-", "_"):
+            chars.append(ch)
+        else:
+            chars.append("_")
+    return "".join(chars)
+
+
+def _to_serializable(obj):
+    if isinstance(obj, dict):
+        return {k: _to_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_serializable(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    return obj
 class SegDataset(Dataset):
-    def __init__(self, seg_index: SegIndex, idxs, train: bool, size: int, norm_mode: str = "clip"):
+    def __init__(self, seg_index: SegIndex, idxs, train: bool, size: int, norm_mode: str = "clip",
+                 aug_dump_dir: str = "", aug_dump_limit: int = 0):
         self.si = seg_index
         self.idxs = list(idxs)
-        self.tf = _build_tf(train, size, norm_mode, include_normalize=True)
+        self.tf, self.normalize_tf = _build_tf(train, size, norm_mode, include_normalize=True)
         self.to_tensor = ToTensorV2(transpose_mask=False)
+        self.dump_dir = aug_dump_dir or ""
+        self.dump_limit = int(aug_dump_limit) if aug_dump_limit else 0
+        self.dump_enabled = bool(self.dump_dir and self.dump_limit > 0)
+        self._dump_counter = 0
+        if self.dump_enabled:
+            os.makedirs(self.dump_dir, exist_ok=True)
 
     def __len__(self):
         return len(self.idxs)
@@ -240,8 +280,57 @@ class SegDataset(Dataset):
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         mask = rec["mask"]
         tfed = self.tf(image=img, mask=mask)
-        x = tfed["image"]
-        m = tfed["mask"].astype(np.int64)  # 0..C
-        x = self.to_tensor(image=x)["image"]
-        return x, torch.from_numpy(m), rec["path"]
+        aug_img = tfed["image"]
+        aug_mask = tfed["mask"].astype(np.uint8)
+        replay = tfed.get("replay")
 
+        norm_img = aug_img
+        if self.normalize_tf is not None:
+            norm_img = self.normalize_tf(image=aug_img)["image"]
+
+        norm_img = np.ascontiguousarray(norm_img)
+
+        x = self.to_tensor(image=norm_img)["image"]
+        m = torch.from_numpy(aug_mask.astype(np.int64, copy=False))
+
+        if self.dump_enabled and self._dump_counter < self.dump_limit:
+            self._dump_sample(rec["path"], img, aug_img, aug_mask, replay)
+
+        return x, m, rec["path"]
+
+    def _dump_sample(self, source_path, original_img, aug_img, aug_mask, replay):
+        idx = self._dump_counter
+        self._dump_counter += 1
+        base = os.path.splitext(os.path.basename(source_path))[0]
+        safe_base = _sanitize_name(base)
+        uid = uuid.uuid4().hex[:8]
+        prefix = f"{idx:04d}_{safe_base}_{uid}"
+
+        image_path = os.path.join(self.dump_dir, prefix + "_image.png")
+        mask_path = os.path.join(self.dump_dir, prefix + "_mask.png")
+        overlay_path = os.path.join(self.dump_dir, prefix + "_overlay.png")
+        meta_path = os.path.join(self.dump_dir, prefix + "_meta.json")
+
+        aug_vis = aug_img
+        if aug_vis.dtype != np.uint8:
+            aug_vis = np.clip(aug_vis, 0, 255).astype(np.uint8)
+        cv2.imwrite(image_path, cv2.cvtColor(aug_vis, cv2.COLOR_RGB2BGR))
+        cv2.imwrite(mask_path, aug_mask)
+
+        color_map = _mask_to_color(aug_mask, self.si.classes)
+        save_overlay(aug_vis, color_map, overlay_path, alpha=0.6, blur=0,
+                     add_legend=True, class_names=self.si.classes, palette=LS_PALETTE)
+
+        orig_h, orig_w = original_img.shape[:2]
+        aug_h, aug_w = aug_mask.shape[:2]
+        meta = {
+            "source_path": source_path,
+            "image_path": image_path,
+            "mask_path": mask_path,
+            "overlay_path": overlay_path,
+            "original_size": [int(orig_h), int(orig_w)],
+            "augmented_size": [int(aug_h), int(aug_w)],
+            "replay": _to_serializable(replay) if replay is not None else None,
+        }
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)

@@ -1,4 +1,4 @@
-import os, json, argparse, random, sys
+import os, json, argparse, random, sys, re
 import numpy as np
 import cv2
 from tqdm.auto import tqdm
@@ -43,7 +43,10 @@ def parse_args():
     ap.add_argument("--vis_blur",   type=int, default=0)
     ap.add_argument("--vis_max_alpha", type=float, default=0.6)
     ap.add_argument("--dump_aliases_template", type=str, default="", help="Path to write a sample aliases.json and exit")
-
+    ap.add_argument("--aug_dump_dir", type=str, default="",
+                    help="Каталог для сохранения примеров аугментаций (train)")
+    ap.add_argument("--aug_dump_limit", type=int, default=0,
+                    help="Сколько аугментированных семплов сохранить (0=выкл)")
     # ovseg
     ap.add_argument("--epochs", type=int, default=12)
     ap.add_argument("--ovseg_img_size", type=int, default=512)
@@ -68,7 +71,7 @@ def parse_args():
 
     args = ap.parse_args()
 
-    for attr in ["images_dir", "coco_json", "test_dir", "test_coco_json", "out_dir", "prep_out_dir", "class_aliases", "ckpt"]:
+    for attr in ["images_dir", "coco_json", "test_dir", "test_coco_json", "out_dir", "prep_out_dir", "class_aliases", "ckpt", "aug_dump_dir"]:
         val = getattr(args, attr, "")
         if isinstance(val, str):
             setattr(args, attr, os.path.expanduser(val.strip()))
@@ -96,15 +99,23 @@ def parse_args():
 
 
 class TopKCheckpointManager:
-    def __init__(self, directory: str, prefix: str, k: int = 5):
+    def __init__(self, directory: str, prefix: str, k: int = 5,
+                 mode: str = "min", saved: Optional[list] = None):
         self.directory = directory
         self.prefix = prefix
         self.k = k
-        self._saved = []  # list of (loss, path)
+        mode = mode.lower().strip()
+        if mode not in {"min", "max"}:
+            raise ValueError(f"Unsupported mode '{mode}', expected 'min' or 'max'")
+        self.mode = mode
+        self._saved = list(saved) if saved is not None else []  # list of (score, path)
+        self._saved.sort(key=lambda x: x[0], reverse=(self.mode == "max"))
+        if len(self._saved) > self.k:
+            self._saved = self._saved[:self.k]
 
-    def _format_metrics_suffix(self, metrics: dict, loss: float) -> str:
+    def _format_metrics_suffix(self, metrics: dict, score: float) -> str:
         parts = [
-            f"loss_{loss:.4f}",
+            f"loss_{score:.4f}",
         ]
         order = [
             ("pixel_acc", "pixelacc"),
@@ -116,14 +127,14 @@ class TopKCheckpointManager:
                 parts.append(f"{tag}_{metrics[key]:.4f}")
         return "_".join(parts)
 
-    def save(self, state_dict: dict, epoch: int, loss: float, metrics: dict, extra=None):
-        suffix = self._format_metrics_suffix(metrics, loss)
+    def save(self, state_dict: dict, epoch: int, score: float, metrics: dict, extra=None):
+        suffix = self._format_metrics_suffix(metrics, score)
         fname = f"{self.prefix}_ep{epoch:03d}_{suffix}.pt"
         path = os.path.join(self.directory, fname)
         payload = {
             "state_dict": state_dict,
             "epoch": int(epoch),
-            "val_loss": float(loss),
+            "val_loss": float(score),
             "metrics": metrics,
         }
         if extra:
@@ -131,8 +142,9 @@ class TopKCheckpointManager:
                 if value is not None:
                     payload[key] = value
         torch.save(payload, path)
-        self._saved.append((loss, path))
-        self._saved.sort(key=lambda x: x[0])
+        self._saved.append((score, path))
+        reverse = (self.mode == "max")
+        self._saved.sort(key=lambda x: x[0], reverse=reverse)
         while len(self._saved) > self.k:
             _, drop_path = self._saved.pop(-1)
             try:
@@ -450,8 +462,18 @@ def ovseg_train(args, device):
         tr_idx += tr_idx_orig
     print(f"[i] training images: {len(tr_idx_orig)} (dup x{args.ovseg_dup} -> {len(tr_idx)}) | val images: {len(va_idx)}")
 
-    ds_tr = SegDataset(seg_index, tr_idx, train=True,  size=args.ovseg_img_size, norm_mode="clip")
+    ds_tr = SegDataset(
+        seg_index,
+        tr_idx,
+        train=True,
+        size=args.ovseg_img_size,
+        norm_mode="clip",
+        aug_dump_dir=args.aug_dump_dir,
+        aug_dump_limit=args.aug_dump_limit,
+    )
     ds_va = SegDataset(seg_index, va_idx, train=False, size=args.ovseg_img_size, norm_mode="clip")
+    out_dir = stamp_out_dir(args.out_dir)
+    print(f"[i] results will be saved to: {out_dir}")
     dl_tr = DataLoader(ds_tr, batch_size=args.ovseg_batch_size, shuffle=True,  num_workers=2, pin_memory=True)
     dl_va = DataLoader(ds_va, batch_size=args.ovseg_batch_size, shuffle=False, num_workers=2, pin_memory=True)
 
@@ -483,9 +505,21 @@ def ovseg_train(args, device):
     )
     criterion = nn.CrossEntropyLoss(ignore_index=255)
 
+
     ckpt_dir = os.path.join(out_dir, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
-    ckpt_mgr = TopKCheckpointManager(ckpt_dir, prefix="ovseg", k=5)
+    ckpt_dir_train = os.path.join(ckpt_dir, "best_train_loss")
+    ckpt_dir_val = os.path.join(ckpt_dir, "best_val_miou")
+    os.makedirs(ckpt_dir_train, exist_ok=True)
+    os.makedirs(ckpt_dir_val, exist_ok=True)
+    ckpt_mgr_train = TopKCheckpointManager(ckpt_dir_train, prefix="ovseg", k=5, mode="min")
+    ckpt_mgr_val = TopKCheckpointManager(ckpt_dir_val, prefix="ovseg", k=5, mode="max")
+
+    vis_root = os.path.join(out_dir, "vis")
+    os.makedirs(vis_root, exist_ok=True)
+    vis_count = max(1, min(args.epochs, 10))
+    vis_epochs = sorted({int(round(ep)) for ep in np.linspace(1, args.epochs, num=vis_count)})
+    vis_epochs = [ep for ep in vis_epochs if 1 <= ep <= args.epochs]
 
     for ep in range(1, args.epochs+1):
         model.train(); losses = []; seen = 0
@@ -525,8 +559,68 @@ def ovseg_train(args, device):
             tag = "all" if frac >= 1.0 else f"{int(frac*100)}%"
             print(f"[ep {ep:03d}] train[{tag}]: mIoU={mt['miou']:.4f}  F1={mt['f1_macro']:.4f}")
 
-        ckpt_mgr.save(model.state_dict(), ep, val_loss, m, extra={"classes": seg_index.classes})
+        extra_payload = {"classes": seg_index.classes}
+        ckpt_mgr_train.save(model.state_dict(), ep, avg_loss, m, extra=extra_payload)
+        ckpt_mgr_val.save(model.state_dict(), ep, m['miou'], m, extra=extra_payload)
 
+        if ep in vis_epochs:
+            if len(dl_va) == 0:
+                continue
+
+            ep_dir = os.path.join(vis_root, f"ep{ep:03d}")
+            os.makedirs(ep_dir, exist_ok=True)
+            ep_idx_dir = os.path.join(ep_dir, "idx")
+            ep_color_dir = os.path.join(ep_dir, "color")
+            ep_over_dir = os.path.join(ep_dir, "overlay")
+            os.makedirs(ep_idx_dir, exist_ok=True)
+            os.makedirs(ep_color_dir, exist_ok=True)
+            os.makedirs(ep_over_dir, exist_ok=True)
+
+            max_vis_batches = min(2, max(1, len(dl_va)))
+            mean = np.array(CLIP_MEAN, dtype=np.float32)
+            std = np.array(CLIP_STD, dtype=np.float32)
+            model.eval()
+            with torch.no_grad():
+                saved = 0
+                for b_idx, (x_va, _, paths) in enumerate(dl_va):
+                    if b_idx >= max_vis_batches:
+                        break
+                    logits = model(x_va.to(device))["out"]
+                    if logits.shape[-2:] != x_va.shape[-2:]:
+                        logits = F.interpolate(logits, size=x_va.shape[-2:], mode="bilinear", align_corners=False)
+                    probs = torch.softmax(logits, dim=1)
+                    for i in range(x_va.size(0)):
+                        img = x_va[i].detach().cpu().numpy().transpose(1, 2, 0)
+                        img = (img * std[None, None, :]) + mean[None, None, :]
+                        img = np.clip(img, 0.0, 1.0)
+                        img_rgb = (img * 255.0).astype(np.uint8)
+
+                        acc = probs[i].detach().cpu().numpy()
+
+                        raw_path = paths[i]
+                        if args.images_dir and os.path.exists(args.images_dir):
+                            try:
+                                rel = os.path.relpath(raw_path, args.images_dir)
+                            except ValueError:
+                                rel = raw_path
+                        else:
+                            rel = raw_path
+                        safe_base = re.sub(r"[^0-9a-zA-Z._/-]", "_", rel)
+                        safe_base = safe_base.replace(os.sep, "__").replace("/", "__")
+                        safe_base = safe_base.replace("..", "__")
+                        safe_base = os.path.splitext(safe_base)[0]
+                        fname = f"{saved:04d}__{safe_base}"
+
+                        idx_path = os.path.join(ep_idx_dir, fname + ".png")
+                        color_path = os.path.join(ep_color_dir, fname + ".png")
+                        over_path = os.path.join(ep_over_dir, fname + ".jpg")
+
+                        _, color_map = save_index_and_color_maps(acc, seg_index.classes, idx_path, color_path,
+                                                                 vis_thr=0.5, palette=LS_PALETTE, add_legend=True)
+                        save_overlay(img_rgb, color_map, over_path, alpha=args.vis_max_alpha, blur=args.vis_blur,
+                                     add_legend=True, class_names=seg_index.classes, palette=LS_PALETTE)
+                        saved += 1
+            model.train()
 
 def ovseg_infer(args, device):
     assert args.ckpt, "--ckpt is required for ovseg_infer"
@@ -623,12 +717,18 @@ def ovseg_infer(args, device):
         x = torch.from_numpy(x.transpose(2,0,1)).unsqueeze(0).float().to(device)
 
         with torch.no_grad():
-            out = model(x)["out"]
-            logits = F.interpolate(out, size=(newH, newW), mode="bilinear", align_corners=False)
-            pred = logits.argmax(1)[0].detach().cpu().numpy()  # 0..C
+            logits = model(x)["out"]
 
-        full = np.zeros((H, W), np.uint8)
-        full[:newH, :newW] = pred
+            logit_h, logit_w = logits.shape[-2:]
+            if padH > 0 or padW > 0:
+                valid_h = logit_h - int(round(logit_h * padH / args.ovseg_img_size))
+                valid_w = logit_w - int(round(logit_w * padW / args.ovseg_img_size))
+                valid_h = max(1, min(valid_h, logit_h))
+                valid_w = max(1, min(valid_w, logit_w))
+                logits = logits[..., :valid_h, :valid_w]
+
+            logits = F.interpolate(logits, size=(H, W), mode="bilinear", align_corners=False)
+            pred = logits.argmax(1)[0].detach().cpu().numpy()  # 0..C
 
         base = os.path.splitext(os.path.basename(path))[0]
         idx_path   = os.path.join(out_idx,   base + ".png")
@@ -643,7 +743,7 @@ def ovseg_infer(args, device):
         total_channels = num_classes + 1
         acc = np.zeros((total_channels, H, W), np.float32)
         for c in range(total_channels):
-            acc[c] = (full == c).astype(np.float32)
+            acc[c] = (pred == c).astype(np.float32)
         _, color_map = save_index_and_color_maps(acc, class_names, idx_path, color_path,
                                                  vis_thr=0.5, palette=LS_PALETTE, add_legend=args.vis_legend)
         save_overlay(src, color_map, over_path, alpha=args.vis_max_alpha, blur=args.vis_blur,
