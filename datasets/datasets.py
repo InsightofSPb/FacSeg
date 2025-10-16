@@ -205,12 +205,44 @@ def build_prepare_tf(split: str, norm_mode: str, include_normalize: bool = True)
 
 def _build_tf(train: bool, size: int, norm_mode: str, include_normalize: bool = True):
     if train:
+        resize_or_crop = A.OneOf([
+            A.RandomResizedCrop(
+                height=size,
+                width=size,
+                scale=(0.4, 1.0),
+                ratio=(0.75, 1.33),
+                interpolation=cv2.INTER_LINEAR,
+            ),
+            A.Compose([
+                A.LongestMaxSize(max_size=size),
+                A.PadIfNeeded(
+                    min_height=size,
+                    min_width=size,
+                    border_mode=cv2.BORDER_CONSTANT,
+                ),
+            ]),
+        ], p=1.0)
+
+        color_aug = A.OneOf([
+            A.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.25, hue=0.1, p=1.0),
+            A.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=1.0),
+            A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=15, val_shift_limit=10, p=1.0),
+            A.RGBShift(r_shift_limit=10, g_shift_limit=10, b_shift_limit=10, p=1.0),
+        ], p=0.7)
+
         aug = [
-            A.LongestMaxSize(max_size=size),
-            A.PadIfNeeded(min_height=size, min_width=size, border_mode=cv2.BORDER_CONSTANT),  # без value
+            resize_or_crop,
             A.HorizontalFlip(p=0.5),
-            A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.2, rotate_limit=15, p=0.5,
-                               border_mode=cv2.BORDER_REFLECT_101),
+            A.VerticalFlip(p=0.1),
+            A.ShiftScaleRotate(
+                shift_limit=0.05,
+                scale_limit=0.2,
+                rotate_limit=15,
+                p=0.5,
+                border_mode=cv2.BORDER_REFLECT_101,
+            ),
+            color_aug,
+            A.GaussNoise(var_limit=(10.0, 30.0), p=0.1),
         ]
     else:
         aug = [

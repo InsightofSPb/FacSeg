@@ -36,7 +36,7 @@ def parse_args():
     ap.add_argument("--compile", action="store_true")
     ap.add_argument("--compile_mode", default="default")
     ap.add_argument("--compile_backend", default=None)
-    ap.add_argument("--val_ratio", type=float, default=0.2)
+    ap.add_argument("--val_ratio", type=float, default=0.25)
     ap.add_argument("--class_aliases", type=str, default="")
     ap.add_argument("--vis_legend", action="store_true", help="Draw legend on saved visuals")
 
@@ -48,10 +48,10 @@ def parse_args():
     ap.add_argument("--aug_dump_limit", type=int, default=0,
                     help="Сколько аугментированных семплов сохранить (0=выкл)")
     # ovseg
-    ap.add_argument("--epochs", type=int, default=25)
+    ap.add_argument("--epochs", type=int, default=100)
     ap.add_argument("--ovseg_img_size", type=int, default=512)
     ap.add_argument("--ovseg_batch_size", type=int, default=2)
-    ap.add_argument("--ovseg_dup", type=int, default=50)
+    ap.add_argument("--ovseg_dup", type=int, default=10)
     ap.add_argument("--ovseg_model", default="ViT-B-16")
     ap.add_argument("--ovseg_ckpt",  default="openai")
     ap.add_argument("--ovseg_freeze_backbone", action="store_true")
@@ -562,7 +562,9 @@ def ovseg_train(args, device):
         ckpt_mgr_val.save(model.state_dict(), ep, m['miou'], m, extra=extra_payload)
 
         if ep in vis_epochs:
-            if len(dl_va) == 0:
+            has_val_samples = len(dl_va) > 0
+            has_train_samples = len(dl_tr) > 0
+            if not has_val_samples and not has_train_samples:
                 continue
 
             ep_dir = os.path.join(vis_root, f"ep{ep:03d}")
@@ -570,54 +572,102 @@ def ovseg_train(args, device):
             ep_idx_dir = os.path.join(ep_dir, "idx")
             ep_color_dir = os.path.join(ep_dir, "color")
             ep_over_dir = os.path.join(ep_dir, "overlay")
-            os.makedirs(ep_idx_dir, exist_ok=True)
-            os.makedirs(ep_color_dir, exist_ok=True)
-            os.makedirs(ep_over_dir, exist_ok=True)
+            if has_val_samples:
+                os.makedirs(ep_idx_dir, exist_ok=True)
+                os.makedirs(ep_color_dir, exist_ok=True)
+                os.makedirs(ep_over_dir, exist_ok=True)
 
-            max_vis_batches = min(2, max(1, len(dl_va)))
+            train_gt_dir = os.path.join(ep_dir, "train_gt")
+            train_pred_dir = os.path.join(ep_dir, "train_pred")
+            if has_train_samples:
+                os.makedirs(train_gt_dir, exist_ok=True)
+                os.makedirs(train_pred_dir, exist_ok=True)
+
             mean = np.array(CLIP_MEAN, dtype=np.float32)
             std = np.array(CLIP_STD, dtype=np.float32)
             model.eval()
             with torch.no_grad():
-                saved = 0
-                for b_idx, (x_va, _, paths) in enumerate(dl_va):
-                    if b_idx >= max_vis_batches:
-                        break
-                    logits = model(x_va.to(device))["out"]
-                    if logits.shape[-2:] != x_va.shape[-2:]:
-                        logits = F.interpolate(logits, size=x_va.shape[-2:], mode="bilinear", align_corners=False)
-                    probs = torch.softmax(logits, dim=1)
-                    for i in range(x_va.size(0)):
-                        img = x_va[i].detach().cpu().numpy().transpose(1, 2, 0)
-                        img = (img * std[None, None, :]) + mean[None, None, :]
-                        img = np.clip(img, 0.0, 1.0)
-                        img_rgb = (img * 255.0).astype(np.uint8)
+                if has_val_samples:
+                    max_vis_batches = min(2, max(1, len(dl_va)))
+                    saved = 0
+                    for b_idx, (x_va, _, paths) in enumerate(dl_va):
+                        if b_idx >= max_vis_batches:
+                            break
+                        logits = model(x_va.to(device))["out"]
+                        if logits.shape[-2:] != x_va.shape[-2:]:
+                            logits = F.interpolate(logits, size=x_va.shape[-2:], mode="bilinear", align_corners=False)
+                        probs = torch.softmax(logits, dim=1)
+                        for i in range(x_va.size(0)):
+                            img = x_va[i].detach().cpu().numpy().transpose(1, 2, 0)
+                            img = (img * std[None, None, :]) + mean[None, None, :]
+                            img = np.clip(img, 0.0, 1.0)
+                            img_rgb = (img * 255.0).astype(np.uint8)
 
-                        acc = probs[i].detach().cpu().numpy()
+                            acc = probs[i].detach().cpu().numpy()
 
-                        raw_path = paths[i]
-                        if args.images_dir and os.path.exists(args.images_dir):
-                            try:
-                                rel = os.path.relpath(raw_path, args.images_dir)
-                            except ValueError:
+                            raw_path = paths[i]
+                            if args.images_dir and os.path.exists(args.images_dir):
+                                try:
+                                    rel = os.path.relpath(raw_path, args.images_dir)
+                                except ValueError:
+                                    rel = raw_path
+                            else:
                                 rel = raw_path
-                        else:
-                            rel = raw_path
-                        safe_base = re.sub(r"[^0-9a-zA-Z._/-]", "_", rel)
-                        safe_base = safe_base.replace(os.sep, "__").replace("/", "__")
-                        safe_base = safe_base.replace("..", "__")
-                        safe_base = os.path.splitext(safe_base)[0]
-                        fname = f"{saved:04d}__{safe_base}"
+                            safe_base = re.sub(r"[^0-9a-zA-Z._/-]", "_", rel)
+                            safe_base = safe_base.replace(os.sep, "__").replace("/", "__")
+                            safe_base = safe_base.replace("..", "__")
+                            safe_base = os.path.splitext(safe_base)[0]
+                            fname = f"{saved:04d}__{safe_base}"
 
-                        idx_path = os.path.join(ep_idx_dir, fname + ".png")
-                        color_path = os.path.join(ep_color_dir, fname + ".png")
-                        over_path = os.path.join(ep_over_dir, fname + ".jpg")
+                            idx_path = os.path.join(ep_idx_dir, fname + ".png")
+                            color_path = os.path.join(ep_color_dir, fname + ".png")
+                            over_path = os.path.join(ep_over_dir, fname + ".jpg")
 
-                        _, color_map = save_index_and_color_maps(acc, seg_index.classes, idx_path, color_path,
-                                                                 vis_thr=0.5, palette=LS_PALETTE, add_legend=True)
-                        save_overlay(img_rgb, color_map, over_path, alpha=args.vis_max_alpha, blur=args.vis_blur,
-                                     add_legend=True, class_names=seg_index.classes, palette=LS_PALETTE)
-                        saved += 1
+                            _, color_map = save_index_and_color_maps(acc, seg_index.classes, idx_path, color_path,
+                                                                     vis_thr=0.5, palette=LS_PALETTE, add_legend=True)
+                            save_overlay(img_rgb, color_map, over_path, alpha=args.vis_max_alpha, blur=args.vis_blur,
+                                         add_legend=True, class_names=seg_index.classes, palette=LS_PALETTE)
+                            saved += 1
+
+                if has_train_samples:
+                    max_train_batches = min(2, max(1, len(dl_tr)))
+                    saved_train = 0
+                    for b_idx, (x_tr_vis, m_tr_vis, paths_tr) in enumerate(dl_tr):
+                        if b_idx >= max_train_batches:
+                            break
+                        logits_tr = model(x_tr_vis.to(device))["out"]
+                        if logits_tr.shape[-2:] != x_tr_vis.shape[-2:]:
+                            logits_tr = F.interpolate(logits_tr, size=x_tr_vis.shape[-2:], mode="bilinear", align_corners=False)
+                        probs_tr = torch.softmax(logits_tr, dim=1)
+                        preds_tr = probs_tr.argmax(1).cpu().numpy().astype(np.uint8)
+                        masks_tr = m_tr_vis.cpu().numpy().astype(np.uint8)
+
+                        for i in range(x_tr_vis.size(0)):
+                            raw_path = paths_tr[i]
+                            if args.images_dir and os.path.exists(args.images_dir):
+                                try:
+                                    rel = os.path.relpath(raw_path, args.images_dir)
+                                except ValueError:
+                                    rel = raw_path
+                            else:
+                                rel = raw_path
+                            safe_base = re.sub(r"[^0-9a-zA-Z._/-]", "_", rel)
+                            safe_base = safe_base.replace(os.sep, "__").replace("/", "__")
+                            safe_base = safe_base.replace("..", "__")
+                            safe_base = os.path.splitext(safe_base)[0]
+                            fname = f"{saved_train:04d}__{safe_base}"
+
+                            gt_mask = masks_tr[i].copy()
+                            gt_mask[gt_mask == 255] = 0
+                            gt_color = _mask_to_color(gt_mask, seg_index.classes)
+                            pred_color = _mask_to_color(preds_tr[i], seg_index.classes)
+
+                            gt_path = os.path.join(train_gt_dir, fname + ".png")
+                            pred_path = os.path.join(train_pred_dir, fname + ".png")
+
+                            cv2.imwrite(gt_path, gt_color)
+                            cv2.imwrite(pred_path, pred_color)
+                            saved_train += 1
             model.train()
 
 def ovseg_infer(args, device):
