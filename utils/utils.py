@@ -280,28 +280,47 @@ def seg_hist_np(pred, target, num_classes: int, ignore_index: int = 255):
     return hist
 
 def seg_metrics_from_hist(hist: np.ndarray, ignore_background: bool = True):
-    """
-    Из confusion matrix считает:
-      - pixel_acc (по всем классам, включая фон)
-      - per-class IoU, mIoU
-      - per-class F1, macro-F1
-    Если ignore_background=True — IoU/F1 считаются по классам 1..K-1.
+    """Compute segmentation metrics from a confusion matrix.
+
+    Args:
+        hist: Confusion matrix of shape (K, K) where rows are GT classes and
+            columns are predictions.
+        ignore_background: If ``True`` the background class (index 0) is
+            excluded from IoU/F1 averaging, but its interactions still count as
+            false positives/negatives for the foreground classes.
     """
     eps = 1e-7
+    hist = np.asarray(hist, dtype=np.float64)
     K = hist.shape[0]
-    acc = float(hist.trace()) / float(hist.sum() + eps)
 
-    if ignore_background and K > 1:
-        h = hist[1:, 1:].astype(np.float64)
+    total = float(hist.sum())
+    acc = float(hist.trace()) / float(total + eps)
+
+    if ignore_background:
+        if K <= 1:
+            iou_per_class = np.array([], dtype=np.float64)
+            f1_per_class = np.array([], dtype=np.float64)
+        else:
+            tp = np.diag(hist)[1:]
+            # Предсказания класса c (включая фон как ложные срабатывания)
+            fp = hist[:, 1:].sum(0) - tp
+            # Пиксели класса c в разметке, предсказанные чем-то ещё (включая фон)
+            fn = hist[1:, :].sum(1) - tp
+
+            denom_iou = tp + fp + fn + eps
+            iou_per_class = np.divide(tp, denom_iou, out=np.zeros_like(tp), where=denom_iou > 0)
+
+            denom_f1 = 2.0 * tp + fp + fn + eps
+            f1_per_class = np.divide(2.0 * tp, denom_f1, out=np.zeros_like(tp), where=denom_f1 > 0)
     else:
-        h = hist.astype(np.float64)
+        tp = np.diag(hist)
+        fp = hist.sum(0) - tp
+        fn = hist.sum(1) - tp
+        denom_iou = tp + fp + fn + eps
+        iou_per_class = np.divide(tp, denom_iou, out=np.zeros_like(tp), where=denom_iou > 0)
 
-    tp = np.diag(h)
-    fp = h.sum(0) - tp
-    fn = h.sum(1) - tp
-
-    iou_per_class = tp / (tp + fp + fn + eps)
-    f1_per_class  = 2.0 * tp / (2.0 * tp + fp + fn + eps)
+        denom_f1 = 2.0 * tp + fp + fn + eps
+        f1_per_class = np.divide(2.0 * tp, denom_f1, out=np.zeros_like(tp), where=denom_f1 > 0)
 
     miou = float(np.nanmean(iou_per_class)) if iou_per_class.size else 0.0
     f1_macro = float(np.nanmean(f1_per_class)) if f1_per_class.size else 0.0

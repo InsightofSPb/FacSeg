@@ -48,10 +48,10 @@ def parse_args():
     ap.add_argument("--aug_dump_limit", type=int, default=0,
                     help="Сколько аугментированных семплов сохранить (0=выкл)")
     # ovseg
-    ap.add_argument("--epochs", type=int, default=12)
+    ap.add_argument("--epochs", type=int, default=25)
     ap.add_argument("--ovseg_img_size", type=int, default=512)
-    ap.add_argument("--ovseg_batch_size", type=int, default=6)
-    ap.add_argument("--ovseg_dup", type=int, default=1)
+    ap.add_argument("--ovseg_batch_size", type=int, default=2)
+    ap.add_argument("--ovseg_dup", type=int, default=50)
     ap.add_argument("--ovseg_model", default="ViT-B-16")
     ap.add_argument("--ovseg_ckpt",  default="openai")
     ap.add_argument("--ovseg_freeze_backbone", action="store_true")
@@ -472,10 +472,8 @@ def ovseg_train(args, device):
         aug_dump_limit=args.aug_dump_limit,
     )
     ds_va = SegDataset(seg_index, va_idx, train=False, size=args.ovseg_img_size, norm_mode="clip")
-    out_dir = stamp_out_dir(args.out_dir)
-    print(f"[i] results will be saved to: {out_dir}")
-    dl_tr = DataLoader(ds_tr, batch_size=args.ovseg_batch_size, shuffle=True,  num_workers=2, pin_memory=True)
-    dl_va = DataLoader(ds_va, batch_size=args.ovseg_batch_size, shuffle=False, num_workers=2, pin_memory=True)
+    dl_tr = DataLoader(ds_tr, batch_size=args.ovseg_batch_size, shuffle=True,  num_workers=2, pin_memory=True, persistent_workers=True, prefetch_factor=2)
+    dl_va = DataLoader(ds_va, batch_size=args.ovseg_batch_size, shuffle=False, num_workers=2, pin_memory=True, persistent_workers=True, prefetch_factor=2)
 
     model = OvSegModel(args.ovseg_model, args.ovseg_ckpt, seg_index.num_classes,
                        freeze_backbone=args.ovseg_freeze_backbone,
