@@ -4,3 +4,7 @@
 [2025-10-18 19:58:09 LPOSS] (main_eval.py 35): INFO Creating model:LPOSS
 [2025-10-18 20:03:50 LPOSS] (main_eval.py 33): INFO ### Validation dataset: cityscapes
 [2025-10-18 20:03:50 LPOSS] (main_eval.py 35): INFO Creating model:LPOSS
+[2025-10-18 20:13:55 LPOSS] (main_eval.py 33): INFO ### Validation dataset: cityscapes
+[2025-10-18 20:13:55 LPOSS] (main_eval.py 35): INFO Creating model:LPOSS
+[2025-10-18 20:17:08 LPOSS] (main_eval.py 33): INFO ### Validation dataset: cityscapes
+[2025-10-18 20:17:08 LPOSS] (main_eval.py 35): INFO Creating model:LPOSS

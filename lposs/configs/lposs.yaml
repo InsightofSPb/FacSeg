@@ -35,4 +35,6 @@ evaluate:
     - ade20k
 
   # evaluation
-  cityscapes: segmentation/configs/_base_/datasets/cityscapes.py
+  cityscapes:
+    config: segmentation/configs/_base_/datasets/cityscapes.py
+    data_root: ${oc.env:CITYSCAPES_ROOT, ./data/cityscapes}
