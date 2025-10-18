@@ -1,3 +1,4 @@
+import inspect
 import os, json, random, uuid
 from collections import defaultdict
 
@@ -203,16 +204,28 @@ def build_prepare_tf(split: str, norm_mode: str, include_normalize: bool = True)
     return A.Compose(aug)
 # ----------------------------- Dataset wrapper -----------------------------
 
+def _make_random_resized_crop(size: int):
+    """Build RandomResizedCrop compatible with Albumentations v1/v2 APIs."""
+    params = inspect.signature(A.RandomResizedCrop.__init__).parameters
+    if "size" in params:
+        return A.RandomResizedCrop(
+            size=(size, size),
+            scale=(0.4, 1.0),
+            ratio=(0.75, 1.33),
+            interpolation=cv2.INTER_LINEAR,
+        )
+    return A.RandomResizedCrop(
+        height=size,
+        width=size,
+        scale=(0.4, 1.0),
+        ratio=(0.75, 1.33),
+        interpolation=cv2.INTER_LINEAR,
+    )
+
 def _build_tf(train: bool, size: int, norm_mode: str, include_normalize: bool = True):
     if train:
         resize_or_crop = A.OneOf([
-            A.RandomResizedCrop(
-                height=size,
-                width=size,
-                scale=(0.4, 1.0),
-                ratio=(0.75, 1.33),
-                interpolation=cv2.INTER_LINEAR,
-            ),
+            _make_random_resized_crop(size),
             A.Compose([
                 A.LongestMaxSize(max_size=size),
                 A.PadIfNeeded(
@@ -242,7 +255,7 @@ def _build_tf(train: bool, size: int, norm_mode: str, include_normalize: bool = 
                 border_mode=cv2.BORDER_REFLECT_101,
             ),
             color_aug,
-            A.GaussNoise(var_limit=(10.0, 30.0), p=0.1),
+            A.GaussNoise(var_limit=(1.0, 5.0), p=0.1),
         ]
     else:
         aug = [

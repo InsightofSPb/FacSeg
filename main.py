@@ -48,18 +48,18 @@ def parse_args():
     ap.add_argument("--aug_dump_limit", type=int, default=0,
                     help="Сколько аугментированных семплов сохранить (0=выкл)")
     # ovseg
-    ap.add_argument("--epochs", type=int, default=100)
+    ap.add_argument("--epochs", type=int, default=500)
     ap.add_argument("--ovseg_img_size", type=int, default=512)
     ap.add_argument("--ovseg_batch_size", type=int, default=2)
-    ap.add_argument("--ovseg_dup", type=int, default=10)
+    ap.add_argument("--ovseg_dup", type=int, default=20)
     ap.add_argument("--ovseg_model", default="ViT-B-16")
     ap.add_argument("--ovseg_ckpt",  default="openai")
     ap.add_argument("--ovseg_freeze_backbone", action="store_true")
     ap.add_argument("--ovseg_lr_decoder", type=float, default=3e-4)
     ap.add_argument("--ovseg_lr_backbone", type=float, default=1e-5)
     ap.add_argument("--ovseg_decoder_ch", type=int, default=256)
-    ap.add_argument("--ovseg_decoder_dropout", type=float, default=0.0)
-    ap.add_argument("--train_miou_ratio", type=float, default=0.1,
+    ap.add_argument("--ovseg_decoder_dropout", type=float, default=0.1)
+    ap.add_argument("--train_miou_ratio", type=float, default=0.25,
                     help="Доля train для оценки mIoU/F1 после эпохи (0..1, 0=пропустить, 1=всё)")
     # checkpoints
     ap.add_argument("--ckpt", type=str, default="", help="Path to load checkpoint for infer / resume")
