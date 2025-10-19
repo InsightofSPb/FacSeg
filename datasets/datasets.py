@@ -237,10 +237,10 @@ def _build_tf(train: bool, size: int, norm_mode: str, include_normalize: bool = 
         ], p=1.0)
 
         color_aug = A.OneOf([
-            A.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.25, hue=0.1, p=1.0),
-            A.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=1.0),
-            A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=15, val_shift_limit=10, p=1.0),
-            A.RGBShift(r_shift_limit=10, g_shift_limit=10, b_shift_limit=10, p=1.0),
+            A.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.25, hue=0.1, p=0.2),
+            A.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=0.2),
+            A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=15, val_shift_limit=10, p=0.2),
+            A.RGBShift(r_shift_limit=10, g_shift_limit=10, b_shift_limit=10, p=0.2),
         ], p=0.7)
 
         aug = [
@@ -255,7 +255,6 @@ def _build_tf(train: bool, size: int, norm_mode: str, include_normalize: bool = 
                 border_mode=cv2.BORDER_REFLECT_101,
             ),
             color_aug,
-            A.GaussNoise(var_limit=(1.0, 5.0), p=0.1),
         ]
     else:
         aug = [
