@@ -88,10 +88,12 @@ class FacadeAugment:
             return img, list(segs)
         h, w = img.shape[:2]
         src = np.float32([[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]])
-        jitter = np.random.uniform(-self.perspective_scale, self.perspective_scale, size=(4, 2))
-        jitter[:, 0] *= w
-        jitter[:, 1] *= h
-        dst = src + jitter
+        jitter = np.random.uniform(
+            -self.perspective_scale, self.perspective_scale, size=(4, 2)
+        ).astype(np.float32)
+        jitter[:, 0] *= np.float32(w)
+        jitter[:, 1] *= np.float32(h)
+        dst = (src + jitter).astype(np.float32)
         dst[:, 0] = np.clip(dst[:, 0], 0, w - 1)
         dst[:, 1] = np.clip(dst[:, 1], 0, h - 1)
         matrix = cv2.getPerspectiveTransform(src, dst)
