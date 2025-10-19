@@ -8,7 +8,7 @@ import sys
 import argparse
 import math
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -182,6 +182,22 @@ def _iterate_loader(loader, step: int = 1, max_samples: Optional[int] = None):
             break
 
 
+def _format_confusion_matrix(
+    confusion: np.ndarray, class_names: Optional[Sequence[str]] = None
+) -> str:
+    names = list(class_names) if class_names is not None else [str(i) for i in range(confusion.shape[0])]
+    if not names:
+        return ""
+    max_name = max(len(name) for name in names)
+    cell_width = max(max(len(str(int(val))) for val in confusion.flatten()), 1)
+    header = " " * (max_name + 4) + " ".join(f"{name:>{cell_width}}" for name in names)
+    lines = [header]
+    for name, row in zip(names, confusion):
+        row_str = " ".join(f"{int(val):>{cell_width}}" for val in row)
+        lines.append(f"{name:>{max_name}} -> {row_str}")
+    return "\n".join(lines)
+
+
 def _run_split(
     split_name: str,
     loader,
@@ -196,6 +212,7 @@ def _run_split(
     metric_logger: Optional[FacadeMetricLogger],
     save_overlay: bool,
     logger=None,
+    class_names: Optional[Sequence[str]] = None,
 ):
     output_dir.mkdir(parents=True, exist_ok=True)
     overlay_dir = output_dir / "overlay"
@@ -234,8 +251,19 @@ def _run_split(
         logger.info("Finished %s inference on %d samples", split_name, processed)
 
     if metric_logger is not None:
-        return metric_logger.compute()
-    return None
+        metrics = metric_logger.compute()
+        confusion = metric_logger.confusion_matrix().cpu().numpy()
+        label_names = class_names
+        if label_names is None:
+            label_names = getattr(metric_logger, "display_class_names", None)
+        if logger is not None and confusion.size:
+            logger.info(
+                "%s confusion matrix:\n%s",
+                split_name.capitalize(),
+                _format_confusion_matrix(confusion, label_names),
+            )
+        return metrics, confusion
+    return None, None
 
 
 def main() -> None:
@@ -296,7 +324,7 @@ def main() -> None:
     )
 
     train_limit = None if step == 1 else math.ceil(train_samples / step)
-    train_metrics = _run_split(
+    train_metrics, _ = _run_split(
         "train",
         train_loader,
         model,
@@ -307,9 +335,10 @@ def main() -> None:
         std,
         step,
         train_limit,
-        FacadeMetricLogger(len(class_names)),
+        FacadeMetricLogger(class_names),
         args.save_overlay,
         logger=logger,
+        class_names=class_names,
     )
 
     if train_metrics:
@@ -318,7 +347,7 @@ def main() -> None:
     val_step = max(1, args.val_interval)
     logger.info("Processing validation set with step=%d", val_step)
 
-    val_metrics = _run_split(
+    val_metrics, _ = _run_split(
         "val",
         val_loader,
         model,
@@ -329,9 +358,10 @@ def main() -> None:
         std,
         val_step,
         None,
-        FacadeMetricLogger(len(class_names)),
+        FacadeMetricLogger(class_names),
         args.save_overlay,
         logger=logger,
+        class_names=class_names,
     )
 
     if val_metrics:

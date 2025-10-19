@@ -203,10 +203,12 @@ def train(cfg) -> None:
     )
     optimiser = model.configure_optimiser()
     scaler = GradScaler(enabled=torch.cuda.is_available())
-    metric_logger = FacadeMetricLogger(len(class_names))
+    train_metric_logger = FacadeMetricLogger(class_names)
+    val_metric_logger = FacadeMetricLogger(class_names)
 
     for epoch in range(1, cfg.training.max_epochs + 1):
         model.train()
+        train_metric_logger.reset()
         epoch_loss = 0.0
         num_batches = 0
         start_time = time.time()
@@ -227,14 +229,20 @@ def train(cfg) -> None:
             scaler.update()
             epoch_loss += loss.item()
             num_batches += 1
+            logits = outputs.get('logits')
+            if logits is not None:
+                train_metric_logger.update(logits.detach(), target)
             if idx % cfg.training.log_interval == 0:
                 progress.set_postfix(loss=loss.item(), avg_loss=epoch_loss / num_batches)
 
         elapsed = time.time() - start_time
         logger.info(f"Epoch {epoch} finished: loss={epoch_loss/num_batches:.4f} time={elapsed:.1f}s")
 
+        train_metrics = train_metric_logger.compute()
+        logger.info(f"Training metrics at epoch {epoch}: {train_metrics}")
+
         if epoch % cfg.training.val_interval == 0:
-            metrics = validate(model, val_loader, metric_logger, device)
+            metrics = validate(model, val_loader, val_metric_logger, device)
             logger.info(f"Validation metrics at epoch {epoch}: {metrics}")
 
         ckpt_path = Path(cfg.training.checkpoint_dir) / f"epoch_{epoch:03d}.pth"
