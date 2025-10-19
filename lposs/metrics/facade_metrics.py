@@ -26,6 +26,16 @@ class FacadeMetricLogger:
 
     def update(self, logits: torch.Tensor, target: torch.Tensor) -> None:
         probs = F.softmax(logits, dim=1)
+        if probs.shape[-2:] != target.shape[-2:]:
+            probs = F.interpolate(
+                probs,
+                size=target.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+            probs = torch.clamp(probs, min=1e-8)
+            normaliser = probs.sum(dim=1, keepdim=True).clamp_min(1e-8)
+            probs = probs / normaliser
         preds = probs.argmax(dim=1)
         for pred_map, gt_map in zip(preds, target):
             valid_mask = gt_map != self.ignore_index

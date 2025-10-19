@@ -204,3 +204,14 @@
 [2025-10-19 19:12:27 FacadeLPOSS-baseline] (train_facade_baseline.py 198): INFO Epoch 1 finished: loss=0.6681 time=12.7s
 [2025-10-19 19:15:48 FacadeLPOSS-baseline] (train_facade_baseline.py 179): INFO Train dataset contains 165 images in total after applying repeat factor x5.
 [2025-10-19 19:16:06 FacadeLPOSS-baseline] (train_facade_baseline.py 219): INFO Epoch 1 finished: loss=0.6681 time=10.9s
+[2025-10-19 19:19:23 FacadeLPOSS-baseline] (train_facade_baseline.py 179): INFO Train dataset contains 165 images in total after applying repeat factor x5.
+[2025-10-19 19:19:41 FacadeLPOSS-baseline] (train_facade_baseline.py 219): INFO Epoch 1 finished: loss=0.6681 time=11.2s
+[2025-10-19 19:19:43 FacadeLPOSS-baseline] (train_facade_baseline.py 223): INFO Validation metrics at epoch 1: {'mIoU': 0.08996761590242386, 'boundaryIoU': 0.04437980428338051}
+[2025-10-19 19:19:52 FacadeLPOSS-baseline] (train_facade_baseline.py 219): INFO Epoch 2 finished: loss=0.4887 time=7.6s
+[2025-10-19 19:19:53 FacadeLPOSS-baseline] (train_facade_baseline.py 223): INFO Validation metrics at epoch 2: {'mIoU': 0.09166241437196732, 'boundaryIoU': 0.04308649152517319}
+[2025-10-19 19:20:02 FacadeLPOSS-baseline] (train_facade_baseline.py 219): INFO Epoch 3 finished: loss=0.4669 time=7.5s
+[2025-10-19 19:20:03 FacadeLPOSS-baseline] (train_facade_baseline.py 223): INFO Validation metrics at epoch 3: {'mIoU': 0.09502100944519043, 'boundaryIoU': 0.0504058375954628}
+[2025-10-19 19:20:13 FacadeLPOSS-baseline] (train_facade_baseline.py 219): INFO Epoch 4 finished: loss=0.4364 time=7.7s
+[2025-10-19 19:20:14 FacadeLPOSS-baseline] (train_facade_baseline.py 223): INFO Validation metrics at epoch 4: {'mIoU': 0.09948795288801193, 'boundaryIoU': 0.05290841683745384}
+[2025-10-19 19:20:26 FacadeLPOSS-baseline] (train_facade_baseline.py 219): INFO Epoch 5 finished: loss=0.4690 time=7.7s
+[2025-10-19 19:20:27 FacadeLPOSS-baseline] (train_facade_baseline.py 223): INFO Validation metrics at epoch 5: {'mIoU': 0.09277687221765518, 'boundaryIoU': 0.04191102087497711}
