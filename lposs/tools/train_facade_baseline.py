@@ -35,7 +35,7 @@ def _build_datasets(cfg: Dict, dist: bool = False):
     val_dataset = build_dataset(mmseg_cfg.data.val)
     train_loader = build_dataloader(train_dataset, samples_per_gpu=cfg.training.samples_per_gpu,
                                     workers_per_gpu=cfg.training.workers_per_gpu, shuffle=True, dist=dist)
-    val_loader = build_dataloader(val_dataset, samples_per_gpu=1, workers_per_gpu=1, shuffle=False, dist=dist)
+    val_loader = build_dataloader(val_dataset, samples_per_gpu=2, workers_per_gpu=2, shuffle=False, dist=dist)
     return train_loader, val_loader
 
 
