@@ -1,0 +1,39 @@
+_base_: "default.yaml"
+defaults:
+  - _self_
+
+seed: 42
+model_name: FacadeLPOSS-baseline
+output: "./outputs/facade_baseline"
+
+model:
+  type: FacadeLPOSS
+  clip_backbone: maskclip
+  vit_arch: vit_base
+  vit_patch_size: 16
+  enc_type_feats: "v"
+  trainable_decode_head: true
+  unfreeze_clip_backbone: false
+  optimisation:
+    lr: 5.0e-5
+    weight_decay: 0.0
+    ignore_index: 255
+
+training:
+  dataset:
+    config: segmentation/configs/_base_/datasets/facade_damage.py
+    data_root: ${oc.env:FACADE_DATA_ROOT, ./data/facade_damage}
+    classes: null
+  samples_per_gpu: 2
+  workers_per_gpu: 2
+  max_epochs: 20
+  val_interval: 1
+  log_interval: 10
+  checkpoint_dir: ${output}/checkpoints
+
+evaluate:
+  task:
+    - facade_damage
+  facade_damage:
+    config: segmentation/configs/_base_/datasets/facade_damage.py
+    data_root: ${training.dataset.data_root}
