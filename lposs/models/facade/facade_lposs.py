@@ -56,8 +56,7 @@ class FacadeLPOSS(LPOSS):
         )
 
         if unfreeze_clip_backbone:
-            for param in self.clip_backbone.parameters():
-                param.requires_grad = True
+            self._unfreeze_clip_backbone_layers()
 
         if trainable_decode_head:
             for param in self.clip_backbone.decode_head.parameters():
@@ -68,6 +67,19 @@ class FacadeLPOSS(LPOSS):
 
         self.optimisation = FacadeOptimizationConfig(**(optimisation or {}))
         self._loss = self.optimisation.build_loss()
+
+    def _unfreeze_clip_backbone_layers(self) -> None:
+        """Enable gradients for a subset of CLIP backbone layers."""
+
+        trainable_patterns = (
+            "backbone.visual.transformer.resblocks.10",
+            "backbone.visual.transformer.resblocks.11",
+            "backbone.visual.ln_post",
+            "backbone.visual.proj",
+        )
+
+        for name, param in self.clip_backbone.named_parameters():
+            param.requires_grad = any(pattern in name for pattern in trainable_patterns)
     
     @staticmethod
     def _ensure_training_shapes(
