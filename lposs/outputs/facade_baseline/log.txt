@@ -1,0 +1,32 @@
+[2025-10-19 18:12:14 FacadeLPOSS-baseline] (main_eval.py 33): INFO ### Validation dataset: facade_damage
+[2025-10-19 18:12:14 FacadeLPOSS-baseline] (main_eval.py 35): INFO Creating model:FacadeLPOSS
+[2025-10-19 18:15:37 FacadeLPOSS-baseline] (main_eval.py 33): INFO ### Validation dataset: facade_damage
+[2025-10-19 18:15:37 FacadeLPOSS-baseline] (main_eval.py 35): INFO Creating model:FacadeLPOSS
+[2025-10-19 18:18:37 FacadeLPOSS-baseline] (main_eval.py 33): INFO ### Validation dataset: facade_damage
+[2025-10-19 18:18:37 FacadeLPOSS-baseline] (main_eval.py 35): INFO Creating model:FacadeLPOSS
+[2025-10-19 18:18:55 FacadeLPOSS-baseline] (logging.py 102): INFO per class results:
+[2025-10-19 18:18:55 FacadeLPOSS-baseline] (logging.py 102): INFO 
++-----------------+-------+-------+
+|      Class      |  IoU  |  Acc  |
++-----------------+-------+-------+
+|    background   | 90.23 | 97.25 |
+|      CRACK      |  0.0  |  0.0  |
+|     SPALLING    |  9.2  | 12.88 |
+|   DELAMINATION  |  0.0  |  0.0  |
+| MISSING_ELEMENT |  nan  |  nan  |
+|   WATER_STAIN   |  0.0  |  0.0  |
+|  EFFLORESCENCE  |  nan  |  nan  |
+|    CORROSION    |  nan  |  nan  |
+| ORNAMENT_INTACT |  0.0  |  0.0  |
+|     REPAIRS     |  nan  |  nan  |
+|  TEXT_OR_IMAGES |  0.0  |  nan  |
++-----------------+-------+-------+
+[2025-10-19 18:18:55 FacadeLPOSS-baseline] (logging.py 102): INFO Summary:
+[2025-10-19 18:18:55 FacadeLPOSS-baseline] (logging.py 102): INFO 
++-------+------+-------+
+|  aAcc | mIoU |  mAcc |
++-------+------+-------+
+| 90.13 | 14.2 | 18.35 |
++-------+------+-------+
+[2025-10-19 18:18:55 FacadeLPOSS-baseline] (main_eval.py 42): INFO [facade_damage] mIoU of 8 test images: 14.20%
+[2025-10-19 18:18:55 FacadeLPOSS-baseline] (main_eval.py 121): INFO {'val/facade_damage_miou': 14.2, 'val/avg_miou': 14.2}

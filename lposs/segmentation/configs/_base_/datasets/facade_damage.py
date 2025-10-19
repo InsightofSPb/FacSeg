@@ -1,4 +1,3 @@
-configs/_base_/datasets/facade_damage.py
 # Dataset configuration for facade damage segmentation.
 
 _base_ = ["../custom_import.py"]
@@ -36,6 +35,15 @@ palette = [
 
 img_norm_cfg = dict(mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
 
+meta_keys = [
+    "ori_shape",
+    "img_shape",
+    "pad_shape",
+    "scale_factor",
+    "flip",
+    "flip_direction",
+]
+
 train_pipeline = [
     dict(type="LoadImageFromFile"),
     dict(type="LoadAnnotations"),
@@ -46,31 +54,39 @@ train_pipeline = [
     dict(type="Normalize", **img_norm_cfg),
     dict(type="ImageToTensor", keys=["img"]),
     dict(type="ToTensor", keys=["gt_semantic_seg"]),
-    dict(type="Collect", keys=["img", "gt_semantic_seg"], meta_keys=['ori_shape', 'img_shape', 'pad_shape', 'scale_factor'])
+    dict(type="Collect", keys=["img", "gt_semantic_seg"], meta_keys=meta_keys),
 ]
 
 val_pipeline = [
     dict(type="LoadImageFromFile"),
     dict(type="LoadAnnotations"),
-    dict(type="MultiScaleFlipAug", img_scale=(1024, 1024), flip=False,
-         transforms=[
-             dict(type="Resize", keep_ratio=True),
-             dict(type="Normalize", **img_norm_cfg),
-             dict(type="ImageToTensor", keys=["img"]),
-             dict(type="ToTensor", keys=["gt_semantic_seg"]),
-             dict(type="Collect", keys=["img", "gt_semantic_seg"], meta_keys=['ori_shape', 'img_shape', 'pad_shape', 'scale_factor'])
-         ])
+    dict(
+        type="MultiScaleFlipAug",
+        img_scale=(1024, 1024),
+        flip=False,
+        transforms=[
+            dict(type="Resize", keep_ratio=True),
+            dict(type="Normalize", **img_norm_cfg),
+            dict(type="ImageToTensor", keys=["img"]),
+            dict(type="ToTensor", keys=["gt_semantic_seg"]),
+            dict(type="Collect", keys=["img", "gt_semantic_seg"], meta_keys=meta_keys),
+        ],
+    ),
 ]
 
 test_pipeline = [
     dict(type="LoadImageFromFile"),
-    dict(type="MultiScaleFlipAug", img_scale=(1024, 1024), flip=False,
-         transforms=[
-             dict(type="Resize", keep_ratio=True),
-             dict(type="Normalize", **img_norm_cfg),
-             dict(type="ImageToTensor", keys=["img"]),
-             dict(type="Collect", keys=["img"], meta_keys=['ori_shape', 'img_shape', 'pad_shape', 'scale_factor'])
-         ])
+    dict(
+        type="MultiScaleFlipAug",
+        img_scale=(1024, 1024),
+        flip=False,
+        transforms=[
+            dict(type="Resize", keep_ratio=True),
+            dict(type="Normalize", **img_norm_cfg),
+            dict(type="ImageToTensor", keys=["img"]),
+            dict(type="Collect", keys=["img"], meta_keys=meta_keys),
+        ],
+    ),
 ]
 
 data = dict(

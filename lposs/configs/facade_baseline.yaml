@@ -19,6 +19,15 @@ model:
     weight_decay: 0.0
     ignore_index: 255
 
+alpha: 0.95
+gamma: 3.0
+k: 400
+sigma: 0.01
+pix_dist_pow: 1.0
+pixel_refine: false
+tau: 0.01
+r: 13
+
 training:
   dataset:
     config: segmentation/configs/_base_/datasets/facade_damage.py
