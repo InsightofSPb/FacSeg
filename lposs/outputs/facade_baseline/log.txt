@@ -200,3 +200,7 @@
 [2025-10-19 19:04:05 FacadeLPOSS-baseline] (train_facade_baseline.py 176): INFO Epoch 1 Iter 164: loss=0.4637
 [2025-10-19 19:04:05 FacadeLPOSS-baseline] (train_facade_baseline.py 176): INFO Epoch 1 Iter 165: loss=0.0757
 [2025-10-19 19:04:05 FacadeLPOSS-baseline] (train_facade_baseline.py 179): INFO Epoch 1 finished: loss=0.6482 time=11.5s
+[2025-10-19 19:12:06 FacadeLPOSS-baseline] (train_facade_baseline.py 158): INFO Train dataset contains 165 images in total after applying repeat factor x5.
+[2025-10-19 19:12:27 FacadeLPOSS-baseline] (train_facade_baseline.py 198): INFO Epoch 1 finished: loss=0.6681 time=12.7s
+[2025-10-19 19:15:48 FacadeLPOSS-baseline] (train_facade_baseline.py 179): INFO Train dataset contains 165 images in total after applying repeat factor x5.
+[2025-10-19 19:16:06 FacadeLPOSS-baseline] (train_facade_baseline.py 219): INFO Epoch 1 finished: loss=0.6681 time=10.9s

@@ -11,10 +11,12 @@ from typing import Dict, Iterable, Union
 import torch
 from hydra import compose, initialize_config_dir
 from mmcv import Config
+from mmcv.parallel import DataContainer
 from mmcv.utils import ConfigDict
 from mmcv.runner import set_random_seed
 from mmseg.datasets import build_dataloader, build_dataset
 from torch.cuda.amp import GradScaler, autocast
+from tqdm.auto import tqdm
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = PROJECT_ROOT / "configs"
 if str(PROJECT_ROOT) not in sys.path:
@@ -98,9 +100,22 @@ def _build_datasets(cfg: Dict, dist: bool = False):
         train_cfg = ConfigDict(dict(type='RepeatDataset', times=repeat_times, dataset=train_cfg))
     train_dataset = build_dataset(train_cfg)
     val_dataset = build_dataset(mmseg_cfg.data.val)
-    train_loader = build_dataloader(train_dataset, samples_per_gpu=cfg.training.samples_per_gpu,
-                                    workers_per_gpu=cfg.training.workers_per_gpu, shuffle=True, dist=dist)
-    val_loader = build_dataloader(val_dataset, samples_per_gpu=2, workers_per_gpu=2, shuffle=False, dist=dist)
+    train_loader = build_dataloader(
+        train_dataset,
+        samples_per_gpu=cfg.training.samples_per_gpu,
+        workers_per_gpu=cfg.training.workers_per_gpu,
+        shuffle=True,
+        dist=dist,
+    )
+    val_samples_per_gpu = getattr(cfg.training, "val_samples_per_gpu", 1)
+    val_workers_per_gpu = getattr(cfg.training, "val_workers_per_gpu", cfg.training.workers_per_gpu)
+    val_loader = build_dataloader(
+        val_dataset,
+        samples_per_gpu=val_samples_per_gpu,
+        workers_per_gpu=val_workers_per_gpu,
+        shuffle=False,
+        dist=dist,
+    )
     return train_loader, val_loader
 
 
@@ -112,14 +127,34 @@ def save_checkpoint(model, optimiser, epoch: int, path: Path) -> None:
         'optim_state': optimiser.state_dict(),
     }, path)
 
+def _unwrap_data_container(value):
+    """Recursively unwrap MMCV DataContainer/list wrappers to a tensor."""
+
+    if isinstance(value, DataContainer):
+        return _unwrap_data_container(value.data)
+    if isinstance(value, (list, tuple)):
+        if not value:  # pragma: no cover - defensive programming
+            raise ValueError("Received an empty sequence when unwrapping data container")
+        return _unwrap_data_container(value[0])
+    return value
+
+
+def _tensor_from_batch(batch, key: str, device: torch.device) -> torch.Tensor:
+    """Extract the first tensor for ``key`` from MMCV batch output and move it."""
+
+    tensor = _unwrap_data_container(batch[key])
+    if not isinstance(tensor, torch.Tensor):  # pragma: no cover - configuration issue
+        raise TypeError(f"Expected tensor for key '{key}', received {type(tensor)!r}")
+    return tensor.to(device)
+
 
 def validate(model, data_loader, metric_logger: FacadeMetricLogger, device: torch.device) -> Dict[str, float]:
     model.eval()
     metric_logger.reset()
     with torch.no_grad():
-        for data in data_loader:
-            img = data['img'].data[0].to(device)
-            target = data['gt_semantic_seg'].data[0].squeeze(1).long().to(device)
+        for data in tqdm(data_loader, desc="Validating", leave=False):
+            img = _tensor_from_batch(data, 'img', device)
+            target = _tensor_from_batch(data, 'gt_semantic_seg', device).squeeze(1).long()
             logits = model.forward_train(img)
             metric_logger.update(logits, target)
     return metric_logger.compute()
@@ -160,9 +195,14 @@ def train(cfg) -> None:
         epoch_loss = 0.0
         num_batches = 0
         start_time = time.time()
-        for idx, data in enumerate(train_loader, start=1):
-            img = data['img'].data[0].to(device)
-            target = data['gt_semantic_seg'].data[0].squeeze(1).long().to(device)
+        progress = tqdm(
+            train_loader,
+            desc=f"Epoch {epoch}/{cfg.training.max_epochs}",
+            leave=False,
+        )
+        for idx, data in enumerate(progress, start=1):
+            img = _tensor_from_batch(data, 'img', device)
+            target = _tensor_from_batch(data, 'gt_semantic_seg', device).squeeze(1).long()
             optimiser.zero_grad()
             with autocast(enabled=torch.cuda.is_available()):
                 outputs = model.training_step(img, target)
@@ -173,7 +213,7 @@ def train(cfg) -> None:
             epoch_loss += loss.item()
             num_batches += 1
             if idx % cfg.training.log_interval == 0:
-                logger.info(f"Epoch {epoch} Iter {idx}: loss={loss.item():.4f}")
+                progress.set_postfix(loss=loss.item(), avg_loss=epoch_loss / num_batches)
 
         elapsed = time.time() - start_time
         logger.info(f"Epoch {epoch} finished: loss={epoch_loss/num_batches:.4f} time={elapsed:.1f}s")
