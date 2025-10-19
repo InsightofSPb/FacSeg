@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from mmseg.ops import resize
-from typing import List, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from torch import Tensor
 from open_clip import get_tokenizer,  create_model_from_pretrained
 from models.builder import MODELS
@@ -132,8 +132,16 @@ class MaskClip(nn.Module):
         return seg_logits
 
 class MaskClipHead(nn.Module):
-    def __init__(self, clip_model, class_names, in_channels=3, text_channels=512, use_templates=False, pretrained=None,
-                 **kwargs):
+    def __init__(
+        self,
+        clip_model,
+        class_names,
+        in_channels=3,
+        text_channels=512,
+        use_templates=False,
+        pretrained=None,
+        **kwargs,
+    ):
         super(MaskClipHead, self).__init__()
 
         self.text_channels = text_channels
@@ -142,49 +150,123 @@ class MaskClipHead(nn.Module):
         self.class_names = class_names
         self.in_channels = in_channels
         self.use_templates = use_templates
+        self._prompt_templates: Optional[List[str]] = self._prepare_templates(
+            kwargs.pop("prompt_templates", None)
+        )
+        self._prompt_descriptions: Dict[str, List[str]] = self._prepare_prompt_descriptions(
+            kwargs.pop("prompt_descriptions", None)
+        )
+        dropout = float(kwargs.pop("dropout", 0.0))
+        kwargs.pop("type", None)
         self.tokenizer = get_tokenizer(clip_model)
-        model, _ = create_model_from_pretrained(clip_model, pretrained=pretrained)
-        model.eval()
-        model.cuda()
-        self.register_buffer("class_embeddings", self._get_class_embeddings(model, class_names))
+        self.text_model_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = self._load_text_model()
+        self.class_names = list(class_names)
+        embeddings = self._get_class_embeddings(model, self.class_names)
+        self.register_buffer("class_embeddings", embeddings)
         self.proj = nn.Conv2d(self.in_channels, text_channels, 1, bias=False)
         self.proj.weight = nn.Parameter(model.visual.proj.t()[:, :, None, None])
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
     @torch.no_grad()
-    def update_vocab(self, class_names):
-        model, _ = create_model_from_pretrained(self.clip_model, pretrained=self.pretrained )
+    def update_vocab(self, class_names: Sequence[str]):
+        self.class_names = list(class_names)
+        model = self._load_text_model()
+        embeddings = self._get_class_embeddings(model, self.class_names)
+        embeddings = embeddings.to(self.class_embeddings.device)
+        self.register_buffer("class_embeddings", embeddings, persistent=True)
+
+    def configure_prompts(
+        self,
+        *,
+        prompt_descriptions: Optional[Dict[str, Iterable[str]]] = None,
+        prompt_templates: Optional[Iterable[str]] = None,
+    ) -> None:
+        if prompt_descriptions is not None:
+            self._prompt_descriptions = self._prepare_prompt_descriptions(prompt_descriptions)
+        if prompt_templates is not None:
+            self._prompt_templates = self._prepare_templates(prompt_templates)
+        self.update_vocab(self.class_names)
+
+    def set_dropout(self, rate: float) -> None:
+        self.dropout = nn.Dropout(rate) if rate > 0 else nn.Identity()
+
+    def _load_text_model(self):
+        model, _ = create_model_from_pretrained(self.clip_model, pretrained=self.pretrained)
         model.eval()
-        self.class_embeddings = self._get_class_embeddings(model, class_names)
+        model.to(self.text_model_device)
+        return model
+
+    @staticmethod
+    def _ensure_list(values: Optional[Iterable[str]]) -> List[str]:
+        if values is None:
+            return []
+        if isinstance(values, (str, bytes)):
+            return [str(values)]
+        return [str(value) for value in values]
+
+    def _prepare_templates(self, templates: Optional[Iterable[str]]) -> Optional[List[str]]:
+        template_list = self._ensure_list(templates)
+        return template_list or None
+
+    def _prepare_prompt_descriptions(
+        self, descriptions: Optional[Dict[str, Iterable[str]]]
+    ) -> Dict[str, List[str]]:
+        if descriptions is None:
+            return {}
+        return {str(label): self._ensure_list(texts) for label, texts in descriptions.items()}
+
+    def _resolve_templates(self) -> List[str]:
+        if self._prompt_templates:
+            return self._prompt_templates
+        if self.use_templates:
+            return list(imagenet_templates)
+        pretrained_name = str(self.pretrained or "").lower()
+        if "laion" in pretrained_name:
+            return ['a photo of a {}', 'a photo of an {}']
+        return ['a {}']
+
+    def _resolve_label_prompts(self, label: str) -> List[str]:
+        if label in self._prompt_descriptions:
+            prompts = self._prompt_descriptions[label]
+        else:
+            prompts = [part.strip() for part in label.split(";") if part.strip()]
+        return prompts or [label]
+
+    def _format_prompts(self, base_prompts: List[str]) -> List[str]:
+        templates = self._resolve_templates()
+        formatted: List[str] = []
+        for text in base_prompts:
+            for template in templates:
+                if "{}" in template:
+                    formatted.append(template.format(text))
+                else:
+                    formatted.append(f"{template} {text}")
+        return formatted
 
     @torch.no_grad()
     def _embed_label(self, text_model: torch.nn.Module, label: str) -> torch.Tensor:
         """
         Encode label name into a single vector
         """
-        if self.use_templates:
-            templates = imagenet_templates
-        elif "laion" in self.pretrained:
-            templates = ['a photo of a {}', 'a photo of an {}']
-        else:
-            templates = ['a {}']
-        all_prompts = [self.tokenizer(template.format(label)) for template in templates]
+        prompts = self._format_prompts(self._resolve_label_prompts(label))
+        all_prompts = [self.tokenizer(prompt) for prompt in prompts]
         all_prompts = torch.cat(all_prompts)
-        all_prompts = all_prompts.to("cuda")
+        all_prompts = all_prompts.to(self.text_model_device)
         out = text_model.encode_text(all_prompts)
         out /= out.norm(dim=-1, keepdim=True)
         out = out.mean(dim=0)
         return out
 
     def _get_class_embeddings(self, text_model: torch.nn.Module, class_names: List[str]):
-        aug_embeddings = torch.stack([self._embed_label(text_model, lbl) for label in class_names for lbl in label.split(";")])
-        self.class_mapping = torch.tensor([idx for idx, label in enumerate(class_names) for lbl in label.split(";")], device=aug_embeddings.device)
-        # normalize vector
-        aug_embeddings = aug_embeddings / aug_embeddings.norm(dim=-1, keepdim=True)
-        return aug_embeddings.squeeze(1)
+        embeddings = [self._embed_label(text_model, label) for label in class_names]
+        stacked = torch.stack(embeddings, dim=0)
+        stacked = stacked / stacked.norm(dim=-1, keepdim=True)
+        return stacked
 
     def forward(self, inputs, return_feat=False):
         v = inputs
-        feat = self.proj(v)
+        feat = self.dropout(self.proj(v))
         output = self.cls_seg(feat)
         if return_feat:
             return output, feat

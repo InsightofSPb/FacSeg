@@ -13,11 +13,67 @@ model:
   vit_patch_size: 16
   enc_type_feats: "v"
   trainable_decode_head: true
-  unfreeze_clip_backbone: true
+  unfreeze_clip_backbone: false
+  decode_head_dropout: 0.2
+  gradual_unfreeze:
+    stages:
+      - epoch: 1
+        patterns:
+          - "backbone.visual.ln_post*"
+          - "backbone.visual.transformer.resblocks.11*"
+      - epoch: 4
+        patterns:
+          - "backbone.visual.transformer.resblocks.10*"
+      - epoch: 7
+        patterns:
+          - "backbone.visual.proj*"
+  lora:
+    enabled: true
+    rank: 4
+    alpha: 8
+    dropout: 0.1
+    target_modules:
+      - "backbone.visual.transformer.resblocks.10.mlp.c_fc"
+      - "backbone.visual.transformer.resblocks.10.mlp.c_proj"
+      - "backbone.visual.transformer.resblocks.11.mlp.c_fc"
+      - "backbone.visual.transformer.resblocks.11.mlp.c_proj"
+      - "decode_head.proj"
+  prompt_templates:
+    - "a detailed photo of {} on a building facade"
+    - "close-up view showing {} on masonry"
+  prompt_descriptions:
+    background:
+      - "intact building surfaces without visible damage"
+    CRACK:
+      - "long vertical crack across the facade"
+      - "network of fine cracks near window edges"
+    SPALLING:
+      - "chunks of concrete missing exposing aggregate"
+    DELAMINATION:
+      - "hollow sounding plaster separating from substrate"
+    MISSING_ELEMENT:
+      - "missing bricks leaving rectangular voids"
+    WATER_STAIN:
+      - "dark streaking below window sills from moisture"
+    EFFLORESCENCE:
+      - "white salt crust blooming around mortar joints"
+    CORROSION:
+      - "rust bleeding from embedded metal anchors"
+    ORNAMENT_INTACT:
+      - "decorative facade ornament with clean edges"
+    REPAIRS:
+      - "patched area with mismatched mortar texture"
+    TEXT_OR_IMAGES:
+      - "painted signage on the facade surface"
   optimisation:
-    lr: 5.0e-5
-    weight_decay: 1.0e-4
+    lr: 3.0e-5
+    weight_decay: 5.0e-4
     ignore_index: 255
+    scheduler:
+      type: cosine
+      min_lr: 1.0e-6
+      warmup_epochs: 2
+      t_max: ${training.max_epochs}
 
 alpha: 0.95
 gamma: 3.0
@@ -33,13 +89,14 @@ training:
     config: segmentation/configs/_base_/datasets/facade_damage.py
     data_root: ${oc.env:FACADE_DATA_ROOT, ./data/facade_damage}
     classes: null
-    repeat_times: 20
+    repeat_times: 12
   samples_per_gpu: 1
   workers_per_gpu: 2
-  max_epochs: 10
+  max_epochs: 30
   val_interval: 1
   log_interval: 1
   checkpoint_dir: ${output}/checkpoints
+  confusion_dir: ${output}/confusion_matrices
 
 evaluate:
   task:

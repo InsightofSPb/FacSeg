@@ -1,6 +1,8 @@
 """Utility metrics tailored for facade damage segmentation."""
 
+import csv
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple, Union
 
 import torch
@@ -271,24 +273,48 @@ class FacadeMetricLogger:
             "boundaryIoU": boundary,
             "macroF1": macro_f1,
             "f1": macro_f1,
+            "damageIoU": 0.0,
+            "damagePlusIoU": 0.0,
         }
-        if self.damage_indices:
-            damage_iou = (
-                self.damage_intersection / max(self.damage_union, 1.0)
-                if self.damage_union
-                else 0.0
+        if self.damage_indices and self.damage_union:
+            metrics["damageIoU"] = self.damage_intersection / max(self.damage_union, 1.0)
+        if self.damage_plus_indices and self.damage_plus_union:
+            metrics["damagePlusIoU"] = self.damage_plus_intersection / max(
+                self.damage_plus_union, 1.0
             )
-            metrics["damageIoU"] = damage_iou
-        if self.damage_plus_indices:
-            damage_plus_iou = (
-                self.damage_plus_intersection / max(self.damage_plus_union, 1.0)
-                if self.damage_plus_union
-                else 0.0
-            )
-            metrics["damagePlusIoU"] = damage_plus_iou
         return metrics
 
-    def confusion_matrix(self) -> torch.Tensor:
-        """Return a copy of the accumulated confusion matrix."""
+    def per_class_iou(self) -> Dict[str, float]:
+        unions = self.union.clamp(min=1)
+        ious = (self.intersection / unions).tolist()
+        if self.display_class_names is not None:
+            keys = self.display_class_names
+        else:
+            keys = [str(idx) for idx in range(self.num_classes)]
+        return {key: float(value) for key, value in zip(keys, ious)}
 
-        return self.confusion.clone()
+    def confusion_matrix(self) -> torch.Tensor:
+        """Return a CPU copy of the accumulated confusion matrix."""
+
+        return self.confusion.to("cpu").clone()
+
+    def export_confusion(
+        self,
+        path: Union[str, Path],
+        *,
+        class_names: Optional[Sequence[str]] = None,
+    ) -> None:
+        matrix = self.confusion_matrix().tolist()
+        if class_names is None:
+            if self.display_class_names is not None:
+                class_names = self.display_class_names
+            else:
+                class_names = [str(idx) for idx in range(self.num_classes)]
+        output_path = Path(path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        header = ["class"] + list(class_names)
+        with output_path.open("w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(header)
+            for name, row in zip(class_names, matrix):
+                writer.writerow([name] + [f"{value:.0f}" for value in row])
