@@ -71,7 +71,12 @@ def _resolve_config_path(config_path: Union[str, Path]) -> Path:
         f"Dataset config file not found for '{config_path}'. Checked: {[str(p) for p in candidates]}"
     )
 
-def _build_datasets(cfg: Dict, dist: bool = False):
+def _build_datasets(
+    cfg: Dict,
+    dist: bool = False,
+    include_repeats: bool = True,
+    train_shuffle: bool = True,
+):
 
     _ensure_custom_modules(("segmentation.datasets.facade_damage",))
     _import_module_from_path(
@@ -96,7 +101,7 @@ def _build_datasets(cfg: Dict, dist: bool = False):
         mmseg_cfg.data.val.classes = dataset_cfg.classes
     train_cfg = mmseg_cfg.data.train
     repeat_times = dataset_cfg.get('repeat_times', 1)
-    if repeat_times > 1:
+    if include_repeats and repeat_times > 1:
         train_cfg = ConfigDict(dict(type='RepeatDataset', times=repeat_times, dataset=train_cfg))
     train_dataset = build_dataset(train_cfg)
     val_dataset = build_dataset(mmseg_cfg.data.val)
@@ -104,7 +109,7 @@ def _build_datasets(cfg: Dict, dist: bool = False):
         train_dataset,
         samples_per_gpu=cfg.training.samples_per_gpu,
         workers_per_gpu=cfg.training.workers_per_gpu,
-        shuffle=True,
+        shuffle=train_shuffle,
         dist=dist,
     )
     val_samples_per_gpu = getattr(cfg.training, "val_samples_per_gpu", 1)
@@ -116,7 +121,7 @@ def _build_datasets(cfg: Dict, dist: bool = False):
         shuffle=False,
         dist=dist,
     )
-    return train_loader, val_loader
+    return train_loader, val_loader, mmseg_cfg
 
 
 def save_checkpoint(model, optimiser, epoch: int, path: Path) -> None:
@@ -166,7 +171,7 @@ def train(cfg) -> None:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     set_random_seed(cfg.seed)
 
-    train_loader, val_loader = _build_datasets(cfg)
+    train_loader, val_loader, _ = _build_datasets(cfg)
     repeat_times = 1
     dataset_cfg = getattr(cfg.training, "dataset", None)
     if dataset_cfg is not None:
@@ -186,6 +191,16 @@ def train(cfg) -> None:
     class_names = train_loader.dataset.CLASSES
     model = build_model(cfg.model, class_names=class_names)
     model.to(device)
+
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(
+        "Model parameters: total=%.2fM, trainable=%.2fM (%d / %d)",
+        total_params / 1e6,
+        trainable_params / 1e6,
+        trainable_params,
+        total_params,
+    )
     optimiser = model.configure_optimiser()
     scaler = GradScaler(enabled=torch.cuda.is_available())
     metric_logger = FacadeMetricLogger(len(class_names))
