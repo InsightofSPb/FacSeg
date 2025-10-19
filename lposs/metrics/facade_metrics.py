@@ -93,6 +93,8 @@ class FacadeMetricLogger:
         self.damage_plus_indices = self._collect_indices(
             self.DAMAGE_CLASSES | self.DAMAGE_PLUS_EXTRA
         )
+        self._dtype = torch.float32
+        self._device = torch.device("cpu")
         self.reset()
 
     @staticmethod
@@ -111,19 +113,14 @@ class FacadeMetricLogger:
         return tuple(indices)
 
     def reset(self) -> None:
-        self.intersection = torch.zeros(self.num_classes)
-        self.union = torch.zeros(self.num_classes)
-        self.pred_area = torch.zeros(self.num_classes)
-        self.gt_area = torch.zeros(self.num_classes)
-        self.boundary_inter = torch.zeros(self.num_classes)
-        self.boundary_union = torch.zeros(self.num_classes)
-        self.confusion = torch.zeros((self.num_classes, self.num_classes))
+        self._initialise_state(self._device, self._dtype)
         self.damage_intersection = 0.0
         self.damage_union = 0.0
         self.damage_plus_intersection = 0.0
         self.damage_plus_union = 0.0
 
     def update(self, logits: torch.Tensor, target: torch.Tensor) -> None:
+        self._ensure_state_device(logits.device, logits.dtype)
         probs = F.softmax(logits, dim=1)
         if probs.shape[-2:] != target.shape[-2:]:
             probs = F.interpolate(
@@ -158,8 +155,12 @@ class FacadeMetricLogger:
                 self.num_classes,
                 ignore_index=self.ignore_index,
             )
-            self.boundary_inter += b_inter.float()
-            self.boundary_union += b_union.float()
+            self.boundary_inter += b_inter.to(
+                self.boundary_inter.device, dtype=self.boundary_inter.dtype
+            )
+            self.boundary_union += b_union.to(
+                self.boundary_union.device, dtype=self.boundary_union.dtype
+            )
 
     def _update_damage_metrics(
         self, pred_valid: torch.Tensor, gt_valid: torch.Tensor
@@ -204,6 +205,45 @@ class FacadeMetricLogger:
             minlength=self.num_classes * self.num_classes,
         ).float()
         self.confusion += counts.view(self.num_classes, self.num_classes)
+
+    def _initialise_state(self, device: torch.device, dtype: torch.dtype) -> None:
+        self._device = torch.device(device)
+        self._dtype = dtype
+        self.intersection = torch.zeros(
+            self.num_classes, device=self._device, dtype=self._dtype
+        )
+        self.union = torch.zeros(
+            self.num_classes, device=self._device, dtype=self._dtype
+        )
+        self.pred_area = torch.zeros(
+            self.num_classes, device=self._device, dtype=self._dtype
+        )
+        self.gt_area = torch.zeros(
+            self.num_classes, device=self._device, dtype=self._dtype
+        )
+        self.boundary_inter = torch.zeros(
+            self.num_classes, device=self._device, dtype=self._dtype
+        )
+        self.boundary_union = torch.zeros(
+            self.num_classes, device=self._device, dtype=self._dtype
+        )
+        self.confusion = torch.zeros(
+            (self.num_classes, self.num_classes),
+            device=self._device,
+            dtype=self._dtype,
+        )
+
+    def _ensure_state_device(self, device: torch.device, _: torch.dtype) -> None:
+        resolved_device = torch.device(device)
+        if resolved_device != self._device:
+            self.intersection = self.intersection.to(resolved_device)
+            self.union = self.union.to(resolved_device)
+            self.pred_area = self.pred_area.to(resolved_device)
+            self.gt_area = self.gt_area.to(resolved_device)
+            self.boundary_inter = self.boundary_inter.to(resolved_device)
+            self.boundary_union = self.boundary_union.to(resolved_device)
+            self.confusion = self.confusion.to(resolved_device)
+            self._device = resolved_device
 
     def compute(self) -> Dict[str, float]:
         miou = (self.intersection / self.union.clamp(min=1)).mean().item()
