@@ -47,6 +47,8 @@ def parse_args():
                     help="Каталог для сохранения примеров аугментаций (train)")
     ap.add_argument("--aug_dump_limit", type=int, default=0,
                     help="Сколько аугментированных семплов сохранить (0=выкл)")
+    ap.add_argument("--aug_config", type=str, default="",
+                    help="Путь к JSON с переопределениями аугментаций (prepare/train)")
     # ovseg
     ap.add_argument("--epochs", type=int, default=500)
     ap.add_argument("--ovseg_img_size", type=int, default=512)
@@ -71,10 +73,18 @@ def parse_args():
 
     args = ap.parse_args()
 
-    for attr in ["images_dir", "coco_json", "test_dir", "test_coco_json", "out_dir", "prep_out_dir", "class_aliases", "ckpt", "aug_dump_dir"]:
+    for attr in ["images_dir", "coco_json", "test_dir", "test_coco_json", "out_dir", "prep_out_dir", "class_aliases", "ckpt", "aug_dump_dir", "aug_config"]:
         val = getattr(args, attr, "")
         if isinstance(val, str):
             setattr(args, attr, os.path.expanduser(val.strip()))
+
+    args.aug_config_data = {}
+    if args.aug_config:
+        with open(args.aug_config, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        if not isinstance(cfg, dict):
+            raise ValueError("aug_config JSON должен содержать объект верхнего уровня")
+        args.aug_config_data = cfg
 
     if args.dump_aliases_template:
         template = {
@@ -248,7 +258,7 @@ def _resize_image_and_mask(image: np.ndarray, mask: np.ndarray, size: int):
     return resized_image, resized_mask
 def _export_seg_split(seg_index: SegIndex, idxs, split_name: str, out_root: str,
                       size: int, norm_mode: str, alpha: float = 0.6, crop_conf=None,
-                      rng: Optional[random.Random] = None):
+                      rng: Optional[random.Random] = None, prepare_aug_config=None):
     split_root = os.path.join(out_root, split_name)
     img_dir = os.path.join(split_root, "images")
     mask_dir = os.path.join(split_root, "masks")
@@ -262,7 +272,8 @@ def _export_seg_split(seg_index: SegIndex, idxs, split_name: str, out_root: str,
     crop_count = max(0, int(crop_conf.get("count", 1)))
     crop_min = int(crop_conf.get("min_size", size))
     crop_max = int(crop_conf.get("max_size", size))
-    tf = build_prepare_tf(split_name, norm_mode, include_normalize=False)
+    tf = build_prepare_tf(split_name, norm_mode, include_normalize=False,
+                          aug_config=prepare_aug_config or {})
     tf_pipeline = [type(t).__name__ for t in getattr(tf, "transforms", [])]
     meta = []
     duplicate_groups = {}
@@ -426,10 +437,13 @@ def seg_prepare(args):
         "max_size": args.prep_test_crop_max,
     }
 
+    prepare_cfg = (args.aug_config_data or {}).get("prepare", {})
     _export_seg_split(seg_index, tr_idx, "train", args.prep_out_dir, args.ovseg_img_size,
-                      norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha)
+                      norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha,
+                      prepare_aug_config=prepare_cfg)
     _export_seg_split(seg_index, va_idx, "val", args.prep_out_dir, args.ovseg_img_size,
-                        norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha)
+                        norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha,
+                        prepare_aug_config=prepare_cfg)
 
     if args.test_dir and os.path.isdir(args.test_dir):
         test_json = args.test_coco_json if args.test_coco_json else args.coco_json
@@ -443,7 +457,8 @@ def seg_prepare(args):
                 test_idxs = list(range(len(seg_index_test.items)))
                 print(f"[i] подготовка test={len(test_idxs)}")
                 _export_seg_split(seg_index_test, test_idxs, "test", args.prep_out_dir, args.ovseg_img_size,
-                                  norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha)
+                                  norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha,
+                                  prepare_aug_config=prepare_cfg)
         except Exception as exc:
             print(f"[!] не удалось подготовить тестовый набор: {exc}")
 
@@ -462,6 +477,7 @@ def ovseg_train(args, device):
         tr_idx += tr_idx_orig
     print(f"[i] training images: {len(tr_idx_orig)} (dup x{args.ovseg_dup} -> {len(tr_idx)}) | val images: {len(va_idx)}")
 
+    dataset_cfg = (args.aug_config_data or {}).get("dataset", {})
     ds_tr = SegDataset(
         seg_index,
         tr_idx,
@@ -470,8 +486,16 @@ def ovseg_train(args, device):
         norm_mode="clip",
         aug_dump_dir=args.aug_dump_dir,
         aug_dump_limit=args.aug_dump_limit,
+        aug_config=dataset_cfg,
     )
-    ds_va = SegDataset(seg_index, va_idx, train=False, size=args.ovseg_img_size, norm_mode="clip")
+    ds_va = SegDataset(
+        seg_index,
+        va_idx,
+        train=False,
+        size=args.ovseg_img_size,
+        norm_mode="clip",
+        aug_config=dataset_cfg,
+    )
     dl_tr = DataLoader(ds_tr, batch_size=args.ovseg_batch_size, shuffle=True,  num_workers=2, pin_memory=True, persistent_workers=True, prefetch_factor=2)
     dl_va = DataLoader(ds_va, batch_size=args.ovseg_batch_size, shuffle=False, num_workers=2, pin_memory=True, persistent_workers=True, prefetch_factor=2)
 
