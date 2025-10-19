@@ -16,6 +16,7 @@ Set ``--seed`` for deterministic shuffling before the split is created.
 import argparse
 import json
 import math
+import re
 import os
 import random
 import shutil
@@ -67,12 +68,12 @@ def _flatten_palette(palette: Iterable[Iterable[int]]) -> list:
     flat.extend([0] * (768 - len(flat)))
     return flat
 
-
+_LABEL_STUDIO_PREFIX = re.compile(r"^[0-9a-f]{8,}-")
 def _sanitise_name(name: str) -> str:
     """Strip the Label Studio prefix (``<hash>-``) if present."""
 
     base = os.path.basename(name)
-    if "-" in base:
+    if _LABEL_STUDIO_PREFIX.match(base):
         return base.split("-", 1)[1]
     return base
 
