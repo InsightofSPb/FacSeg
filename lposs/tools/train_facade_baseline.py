@@ -8,6 +8,7 @@ from typing import Dict
 import torch
 from hydra import compose, initialize
 from mmcv import Config
+from mmcv.utils import ConfigDict
 from mmcv.runner import set_random_seed
 from mmseg.datasets import build_dataloader, build_dataset
 from torch.cuda.amp import GradScaler, autocast
@@ -26,7 +27,11 @@ def _build_datasets(cfg: Dict, dist: bool = False):
     if dataset_cfg.get('classes'):
         mmseg_cfg.data.train.classes = dataset_cfg.classes
         mmseg_cfg.data.val.classes = dataset_cfg.classes
-    train_dataset = build_dataset(mmseg_cfg.data.train)
+    train_cfg = mmseg_cfg.data.train
+    repeat_times = dataset_cfg.get('repeat_times', 1)
+    if repeat_times > 1:
+        train_cfg = ConfigDict(dict(type='RepeatDataset', times=repeat_times, dataset=train_cfg))
+    train_dataset = build_dataset(train_cfg)
     val_dataset = build_dataset(mmseg_cfg.data.val)
     train_loader = build_dataloader(train_dataset, samples_per_gpu=cfg.training.samples_per_gpu,
                                     workers_per_gpu=cfg.training.workers_per_gpu, shuffle=True, dist=dist)

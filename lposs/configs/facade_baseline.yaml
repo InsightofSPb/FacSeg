@@ -24,6 +24,7 @@ training:
     config: segmentation/configs/_base_/datasets/facade_damage.py
     data_root: ${oc.env:FACADE_DATA_ROOT, ./data/facade_damage}
     classes: null
+    repeat_times: 1
   samples_per_gpu: 2
   workers_per_gpu: 2
   max_epochs: 20
