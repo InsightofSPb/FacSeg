@@ -8,6 +8,7 @@
 custom_imports = dict(
     imports=["segmentation.datasets.coco_object", "segmentation.datasets.pascal_voc",
              "segmentation.datasets.pascal_voc20",
+             "segmentation.datasets.facade_damage",
              ],
     allow_failed_imports=False,
 )
