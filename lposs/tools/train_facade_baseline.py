@@ -188,7 +188,7 @@ def train(cfg) -> None:
         )
     else:
         logger.info("Train dataset contains %d images in total.", total_train_images)
-    class_names = train_loader.dataset.CLASSES
+    class_names = list(train_loader.dataset.CLASSES)
     model = build_model(cfg.model, class_names=class_names)
     model.to(device)
 
@@ -201,10 +201,14 @@ def train(cfg) -> None:
         trainable_params,
         total_params,
     )
-    optimiser = model.configure_optimiser()
+    optimiser, scheduler = model.configure_optimiser(total_epochs=cfg.training.max_epochs)
     scaler = GradScaler(enabled=torch.cuda.is_available())
     train_metric_logger = FacadeMetricLogger(class_names)
     val_metric_logger = FacadeMetricLogger(class_names)
+    confusion_dir = getattr(cfg.training, "confusion_dir", None)
+    if confusion_dir:
+        confusion_dir = Path(confusion_dir)
+        confusion_dir.mkdir(parents=True, exist_ok=True)
 
     for epoch in range(1, cfg.training.max_epochs + 1):
         model.train()
@@ -212,6 +216,7 @@ def train(cfg) -> None:
         epoch_loss = 0.0
         num_batches = 0
         start_time = time.time()
+        model.update_backbone_trainable(epoch, logger)
         progress = tqdm(
             train_loader,
             desc=f"Epoch {epoch}/{cfg.training.max_epochs}",
@@ -240,11 +245,38 @@ def train(cfg) -> None:
 
         train_metrics = train_metric_logger.compute()
         logger.info(f"Training metrics at epoch {epoch}: {train_metrics}")
+        logger.info(
+            "Per-class IoU (train) at epoch %d: %s",
+            epoch,
+            {k: round(v, 4) for k, v in train_metric_logger.per_class_iou().items()},
+        )
 
         if epoch % cfg.training.val_interval == 0:
             metrics = validate(model, val_loader, val_metric_logger, device)
             logger.info(f"Validation metrics at epoch {epoch}: {metrics}")
+            logger.info(
+                "Per-class IoU (val) at epoch %d: %s",
+                epoch,
+                {k: round(v, 4) for k, v in val_metric_logger.per_class_iou().items()},
+            )
+            if confusion_dir:
+                val_metric_logger.export_confusion(
+                    confusion_dir / f"val_epoch_{epoch:03d}.csv",
+                    class_names=class_names,
+                )
 
+        if confusion_dir:
+            train_metric_logger.export_confusion(
+                confusion_dir / f"train_epoch_{epoch:03d}.csv",
+                class_names=class_names,
+            )
+
+        if scheduler is not None:
+            scheduler.step()
+            current_lr = scheduler.get_last_lr()[0]
+        else:
+            current_lr = optimiser.param_groups[0]["lr"]
+        logger.info("Learning rate after epoch %d: %.6e", epoch, current_lr)
         ckpt_path = Path(cfg.training.checkpoint_dir) / f"epoch_{epoch:03d}.pth"
         save_checkpoint(model, optimiser, epoch, ckpt_path)
 

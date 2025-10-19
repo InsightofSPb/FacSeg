@@ -1,6 +1,8 @@
 """Utility metrics tailored for facade damage segmentation."""
 
+import csv
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple, Union
 
 import torch
@@ -93,6 +95,8 @@ class FacadeMetricLogger:
         self.damage_plus_indices = self._collect_indices(
             self.DAMAGE_CLASSES | self.DAMAGE_PLUS_EXTRA
         )
+        self._dtype = torch.float32
+        self._device = torch.device("cpu")
         self.reset()
 
     @staticmethod
@@ -111,19 +115,14 @@ class FacadeMetricLogger:
         return tuple(indices)
 
     def reset(self) -> None:
-        self.intersection = torch.zeros(self.num_classes)
-        self.union = torch.zeros(self.num_classes)
-        self.pred_area = torch.zeros(self.num_classes)
-        self.gt_area = torch.zeros(self.num_classes)
-        self.boundary_inter = torch.zeros(self.num_classes)
-        self.boundary_union = torch.zeros(self.num_classes)
-        self.confusion = torch.zeros((self.num_classes, self.num_classes))
+        self._initialise_state(self._device, self._dtype)
         self.damage_intersection = 0.0
         self.damage_union = 0.0
         self.damage_plus_intersection = 0.0
         self.damage_plus_union = 0.0
 
     def update(self, logits: torch.Tensor, target: torch.Tensor) -> None:
+        self._ensure_state_device(logits.device, logits.dtype)
         probs = F.softmax(logits, dim=1)
         if probs.shape[-2:] != target.shape[-2:]:
             probs = F.interpolate(
@@ -158,8 +157,12 @@ class FacadeMetricLogger:
                 self.num_classes,
                 ignore_index=self.ignore_index,
             )
-            self.boundary_inter += b_inter.float()
-            self.boundary_union += b_union.float()
+            self.boundary_inter += b_inter.to(
+                self.boundary_inter.device, dtype=self.boundary_inter.dtype
+            )
+            self.boundary_union += b_union.to(
+                self.boundary_union.device, dtype=self.boundary_union.dtype
+            )
 
     def _update_damage_metrics(
         self, pred_valid: torch.Tensor, gt_valid: torch.Tensor
@@ -205,6 +208,45 @@ class FacadeMetricLogger:
         ).float()
         self.confusion += counts.view(self.num_classes, self.num_classes)
 
+    def _initialise_state(self, device: torch.device, dtype: torch.dtype) -> None:
+        self._device = torch.device(device)
+        self._dtype = dtype
+        self.intersection = torch.zeros(
+            self.num_classes, device=self._device, dtype=self._dtype
+        )
+        self.union = torch.zeros(
+            self.num_classes, device=self._device, dtype=self._dtype
+        )
+        self.pred_area = torch.zeros(
+            self.num_classes, device=self._device, dtype=self._dtype
+        )
+        self.gt_area = torch.zeros(
+            self.num_classes, device=self._device, dtype=self._dtype
+        )
+        self.boundary_inter = torch.zeros(
+            self.num_classes, device=self._device, dtype=self._dtype
+        )
+        self.boundary_union = torch.zeros(
+            self.num_classes, device=self._device, dtype=self._dtype
+        )
+        self.confusion = torch.zeros(
+            (self.num_classes, self.num_classes),
+            device=self._device,
+            dtype=self._dtype,
+        )
+
+    def _ensure_state_device(self, device: torch.device, _: torch.dtype) -> None:
+        resolved_device = torch.device(device)
+        if resolved_device != self._device:
+            self.intersection = self.intersection.to(resolved_device)
+            self.union = self.union.to(resolved_device)
+            self.pred_area = self.pred_area.to(resolved_device)
+            self.gt_area = self.gt_area.to(resolved_device)
+            self.boundary_inter = self.boundary_inter.to(resolved_device)
+            self.boundary_union = self.boundary_union.to(resolved_device)
+            self.confusion = self.confusion.to(resolved_device)
+            self._device = resolved_device
+
     def compute(self) -> Dict[str, float]:
         miou = (self.intersection / self.union.clamp(min=1)).mean().item()
         boundary = (self.boundary_inter / self.boundary_union.clamp(min=1)).mean().item()
@@ -231,24 +273,48 @@ class FacadeMetricLogger:
             "boundaryIoU": boundary,
             "macroF1": macro_f1,
             "f1": macro_f1,
+            "damageIoU": 0.0,
+            "damagePlusIoU": 0.0,
         }
-        if self.damage_indices:
-            damage_iou = (
-                self.damage_intersection / max(self.damage_union, 1.0)
-                if self.damage_union
-                else 0.0
+        if self.damage_indices and self.damage_union:
+            metrics["damageIoU"] = self.damage_intersection / max(self.damage_union, 1.0)
+        if self.damage_plus_indices and self.damage_plus_union:
+            metrics["damagePlusIoU"] = self.damage_plus_intersection / max(
+                self.damage_plus_union, 1.0
             )
-            metrics["damageIoU"] = damage_iou
-        if self.damage_plus_indices:
-            damage_plus_iou = (
-                self.damage_plus_intersection / max(self.damage_plus_union, 1.0)
-                if self.damage_plus_union
-                else 0.0
-            )
-            metrics["damagePlusIoU"] = damage_plus_iou
         return metrics
 
-    def confusion_matrix(self) -> torch.Tensor:
-        """Return a copy of the accumulated confusion matrix."""
+    def per_class_iou(self) -> Dict[str, float]:
+        unions = self.union.clamp(min=1)
+        ious = (self.intersection / unions).tolist()
+        if self.display_class_names is not None:
+            keys = self.display_class_names
+        else:
+            keys = [str(idx) for idx in range(self.num_classes)]
+        return {key: float(value) for key, value in zip(keys, ious)}
 
-        return self.confusion.clone()
+    def confusion_matrix(self) -> torch.Tensor:
+        """Return a CPU copy of the accumulated confusion matrix."""
+
+        return self.confusion.to("cpu").clone()
+
+    def export_confusion(
+        self,
+        path: Union[str, Path],
+        *,
+        class_names: Optional[Sequence[str]] = None,
+    ) -> None:
+        matrix = self.confusion_matrix().tolist()
+        if class_names is None:
+            if self.display_class_names is not None:
+                class_names = self.display_class_names
+            else:
+                class_names = [str(idx) for idx in range(self.num_classes)]
+        output_path = Path(path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        header = ["class"] + list(class_names)
+        with output_path.open("w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(header)
+            for name, row in zip(class_names, matrix):
+                writer.writerow([name] + [f"{value:.0f}" for value in row])
