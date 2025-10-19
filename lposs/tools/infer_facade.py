@@ -1,7 +1,10 @@
 """Inference utilities for the facade damage baseline."""
 
 from __future__ import annotations
-
+import importlib
+import importlib.util
+import os
+import sys
 import argparse
 import math
 from pathlib import Path
@@ -12,7 +15,10 @@ import torch
 import torch.nn.functional as F
 from hydra import compose, initialize_config_dir
 from PIL import Image
-
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CONFIG_DIR = PROJECT_ROOT / "configs"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 from helpers.logger import get_logger
 from metrics.facade_metrics import FacadeMetricLogger
 from models import build_model

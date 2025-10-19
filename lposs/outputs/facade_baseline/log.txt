@@ -215,3 +215,48 @@
 [2025-10-19 19:20:14 FacadeLPOSS-baseline] (train_facade_baseline.py 223): INFO Validation metrics at epoch 4: {'mIoU': 0.09948795288801193, 'boundaryIoU': 0.05290841683745384}
 [2025-10-19 19:20:26 FacadeLPOSS-baseline] (train_facade_baseline.py 219): INFO Epoch 5 finished: loss=0.4690 time=7.7s
 [2025-10-19 19:20:27 FacadeLPOSS-baseline] (train_facade_baseline.py 223): INFO Validation metrics at epoch 5: {'mIoU': 0.09277687221765518, 'boundaryIoU': 0.04191102087497711}
+[2025-10-19 19:21:36 FacadeLPOSS-baseline] (train_facade_baseline.py 179): INFO Train dataset contains 660 images in total after applying repeat factor x20.
+[2025-10-19 19:22:25 FacadeLPOSS-baseline] (train_facade_baseline.py 179): INFO Train dataset contains 660 images in total after applying repeat factor x20.
+[2025-10-19 19:22:46 FacadeLPOSS-baseline] (train_facade_baseline.py 179): INFO Train dataset contains 660 images in total after applying repeat factor x20.
+[2025-10-19 19:23:26 FacadeLPOSS-baseline] (train_facade_baseline.py 219): INFO Epoch 1 finished: loss=0.5166 time=33.8s
+[2025-10-19 19:23:28 FacadeLPOSS-baseline] (train_facade_baseline.py 223): INFO Validation metrics at epoch 1: {'mIoU': 0.09502080082893372, 'boundaryIoU': 0.04613897576928139}
+[2025-10-19 19:24:00 FacadeLPOSS-baseline] (train_facade_baseline.py 219): INFO Epoch 2 finished: loss=0.4272 time=30.6s
+[2025-10-19 19:24:01 FacadeLPOSS-baseline] (train_facade_baseline.py 223): INFO Validation metrics at epoch 2: {'mIoU': 0.09267723560333252, 'boundaryIoU': 0.040031492710113525}
+[2025-10-19 19:24:34 FacadeLPOSS-baseline] (train_facade_baseline.py 219): INFO Epoch 3 finished: loss=0.4106 time=30.4s
+[2025-10-19 19:24:35 FacadeLPOSS-baseline] (train_facade_baseline.py 223): INFO Validation metrics at epoch 3: {'mIoU': 0.09715494513511658, 'boundaryIoU': 0.04796808958053589}
+[2025-10-19 19:25:08 FacadeLPOSS-baseline] (train_facade_baseline.py 219): INFO Epoch 4 finished: loss=0.4015 time=30.5s
+[2025-10-19 19:25:09 FacadeLPOSS-baseline] (train_facade_baseline.py 223): INFO Validation metrics at epoch 4: {'mIoU': 0.10035539418458939, 'boundaryIoU': 0.05054141581058502}
+[2025-10-19 19:25:41 FacadeLPOSS-baseline] (train_facade_baseline.py 219): INFO Epoch 5 finished: loss=0.4031 time=30.4s
+[2025-10-19 19:25:42 FacadeLPOSS-baseline] (train_facade_baseline.py 223): INFO Validation metrics at epoch 5: {'mIoU': 0.10270530730485916, 'boundaryIoU': 0.05541349947452545}
+[2025-10-19 19:26:15 FacadeLPOSS-baseline] (train_facade_baseline.py 219): INFO Epoch 6 finished: loss=0.3926 time=30.1s
+[2025-10-19 19:26:16 FacadeLPOSS-baseline] (train_facade_baseline.py 223): INFO Validation metrics at epoch 6: {'mIoU': 0.104643315076828, 'boundaryIoU': 0.05926456302404404}
+[2025-10-19 19:26:48 FacadeLPOSS-baseline] (train_facade_baseline.py 219): INFO Epoch 7 finished: loss=0.3869 time=30.5s
+[2025-10-19 19:26:49 FacadeLPOSS-baseline] (train_facade_baseline.py 223): INFO Validation metrics at epoch 7: {'mIoU': 0.10289738327264786, 'boundaryIoU': 0.05502490699291229}
+[2025-10-19 19:27:21 FacadeLPOSS-baseline] (train_facade_baseline.py 219): INFO Epoch 8 finished: loss=0.3870 time=30.3s
+[2025-10-19 19:27:22 FacadeLPOSS-baseline] (train_facade_baseline.py 223): INFO Validation metrics at epoch 8: {'mIoU': 0.10359650105237961, 'boundaryIoU': 0.05614620819687843}
+[2025-10-19 19:27:54 FacadeLPOSS-baseline] (train_facade_baseline.py 219): INFO Epoch 9 finished: loss=0.3858 time=30.6s
+[2025-10-19 19:27:55 FacadeLPOSS-baseline] (train_facade_baseline.py 223): INFO Validation metrics at epoch 9: {'mIoU': 0.10374553501605988, 'boundaryIoU': 0.05573802813887596}
+[2025-10-19 19:28:27 FacadeLPOSS-baseline] (train_facade_baseline.py 219): INFO Epoch 10 finished: loss=0.3888 time=30.3s
+[2025-10-19 19:28:28 FacadeLPOSS-baseline] (train_facade_baseline.py 223): INFO Validation metrics at epoch 10: {'mIoU': 0.10268399119377136, 'boundaryIoU': 0.055583786219358444}
+[2025-10-19 19:45:36 FacadeLPOSS-baseline] (infer_facade.py 270): INFO Running inference on device cuda
+[2025-10-19 19:45:36 FacadeLPOSS-baseline] (infer_facade.py 271): INFO Model parameters: total=235.96M, trainable=86.19M (86191872 / 235963905)
+[2025-10-19 19:45:37 FacadeLPOSS-baseline] (infer_facade.py 283): INFO Loaded checkpoint from epoch 10
+[2025-10-19 19:45:37 FacadeLPOSS-baseline] (infer_facade.py 291): INFO Processing approximately 3/33 training samples (step=11)
+[2025-10-19 19:45:37 FacadeLPOSS-baseline] (infer_facade.py 207): INFO Starting train inference (step=11, limit=3)
+[2025-10-19 19:45:42 FacadeLPOSS-baseline] (infer_facade.py 234): INFO Finished train inference on 3 samples
+[2025-10-19 19:45:42 FacadeLPOSS-baseline] (infer_facade.py 316): INFO Train metrics: {'mIoU': 0.13843177258968353, 'boundaryIoU': 0.08878973126411438}
+[2025-10-19 19:45:42 FacadeLPOSS-baseline] (infer_facade.py 319): INFO Processing validation set with step=1
+[2025-10-19 19:45:42 FacadeLPOSS-baseline] (infer_facade.py 207): INFO Starting val inference (step=1, limit=None)
+[2025-10-19 19:45:46 FacadeLPOSS-baseline] (infer_facade.py 234): INFO Finished val inference on 4 samples
+[2025-10-19 19:45:46 FacadeLPOSS-baseline] (infer_facade.py 338): INFO Validation metrics: {'mIoU': 0.1026342362165451, 'boundaryIoU': 0.05554156005382538}
+[2025-10-19 19:46:50 FacadeLPOSS-baseline] (infer_facade.py 270): INFO Running inference on device cuda
+[2025-10-19 19:46:50 FacadeLPOSS-baseline] (infer_facade.py 271): INFO Model parameters: total=235.96M, trainable=86.19M (86191872 / 235963905)
+[2025-10-19 19:46:51 FacadeLPOSS-baseline] (infer_facade.py 283): INFO Loaded checkpoint from epoch 10
+[2025-10-19 19:46:51 FacadeLPOSS-baseline] (infer_facade.py 291): INFO Processing approximately 33/33 training samples (step=1)
+[2025-10-19 19:46:51 FacadeLPOSS-baseline] (infer_facade.py 207): INFO Starting train inference (step=1, limit=None)
+[2025-10-19 19:47:07 FacadeLPOSS-baseline] (infer_facade.py 234): INFO Finished train inference on 33 samples
+[2025-10-19 19:47:07 FacadeLPOSS-baseline] (infer_facade.py 316): INFO Train metrics: {'mIoU': 0.1373302936553955, 'boundaryIoU': 0.07316627353429794}
+[2025-10-19 19:47:07 FacadeLPOSS-baseline] (infer_facade.py 319): INFO Processing validation set with step=1
+[2025-10-19 19:47:07 FacadeLPOSS-baseline] (infer_facade.py 207): INFO Starting val inference (step=1, limit=None)
+[2025-10-19 19:47:11 FacadeLPOSS-baseline] (infer_facade.py 234): INFO Finished val inference on 4 samples
+[2025-10-19 19:47:11 FacadeLPOSS-baseline] (infer_facade.py 338): INFO Validation metrics: {'mIoU': 0.1026342362165451, 'boundaryIoU': 0.05554156005382538}
