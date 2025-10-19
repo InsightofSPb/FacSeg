@@ -132,6 +132,22 @@ def train(cfg) -> None:
     set_random_seed(cfg.seed)
 
     train_loader, val_loader = _build_datasets(cfg)
+    repeat_times = 1
+    dataset_cfg = getattr(cfg.training, "dataset", None)
+    if dataset_cfg is not None:
+        if hasattr(dataset_cfg, "get"):
+            repeat_times = dataset_cfg.get("repeat_times", repeat_times)
+        else:
+            repeat_times = getattr(dataset_cfg, "repeat_times", repeat_times)
+    total_train_images = len(train_loader.dataset)
+    if repeat_times and repeat_times > 1:
+        logger.info(
+            "Train dataset contains %d images in total after applying repeat factor x%d.",
+            total_train_images,
+            repeat_times,
+        )
+    else:
+        logger.info("Train dataset contains %d images in total.", total_train_images)
     class_names = train_loader.dataset.CLASSES
     model = build_model(cfg.model, class_names=class_names)
     model.to(device)
