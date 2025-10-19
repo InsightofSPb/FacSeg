@@ -46,8 +46,9 @@ class LoRAInjectedLinear(_LoRABase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # noqa: D401
         base = self.base_layer(x)
-        lora = F.linear(self.dropout(x), self.lora_down.t(), bias=None)
-        lora = F.linear(lora, self.lora_up, bias=None)
+        dropped = self.dropout(x)
+        lora = dropped.matmul(self.lora_down.t())
+        lora = lora.matmul(self.lora_up.t())
         return base + lora * self.scaling
 
 
@@ -74,8 +75,9 @@ class LoRAInjectedConv2d(_LoRABase):
         base = self.base_layer(x)
         b, c, h, w = x.shape
         flattened = x.permute(0, 2, 3, 1).reshape(-1, c)
-        adapted = F.linear(self.dropout(flattened), self.lora_down.t(), bias=None)
-        adapted = F.linear(adapted, self.lora_up, bias=None)
+        dropped = self.dropout(flattened)
+        adapted = dropped.matmul(self.lora_down.t())
+        adapted = adapted.matmul(self.lora_up.t())
         adapted = adapted.view(b, h, w, -1).permute(0, 3, 1, 2).contiguous()
         return base + adapted * self.scaling
 

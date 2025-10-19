@@ -2,11 +2,12 @@
 
 import importlib
 import importlib.util
+import math
 import os
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Iterable, Union
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 import torch
 from hydra import compose, initialize_config_dir
@@ -124,13 +125,124 @@ def _build_datasets(
     return train_loader, val_loader, mmseg_cfg
 
 
-def save_checkpoint(model, optimiser, epoch: int, path: Path) -> None:
+def save_checkpoint(
+    model,
+    optimiser,
+    epoch: int,
+    path: Path,
+    *,
+    metadata: Optional[Dict[str, Union[str, float, int]]] = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({
-        'epoch': epoch,
-        'model_state': model.state_dict(),
-        'optim_state': optimiser.state_dict(),
-    }, path)
+    payload = {
+        "epoch": epoch,
+        "model_state": model.state_dict(),
+        "optim_state": optimiser.state_dict(),
+    }
+    if metadata:
+        payload["metadata"] = metadata
+    torch.save(payload, path)
+
+
+class BestCheckpointManager:
+    """Track and persist the top-N checkpoints per split/metric."""
+
+    def __init__(
+        self,
+        root: Union[str, Path],
+        *,
+        max_keep: int = 5,
+        logger=None,
+    ) -> None:
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.max_keep = max(1, int(max_keep))
+        self.logger = logger
+        self._criteria: Dict[Tuple[str, str], str] = {
+            ("train", "loss"): "min",
+            ("train", "mIoU"): "max",
+            ("val", "loss"): "min",
+            ("val", "mIoU"): "max",
+        }
+        self._records: Dict[Tuple[str, str], List[Dict[str, Union[float, Path, int]]]] = {
+            key: [] for key in self._criteria
+        }
+
+    def maybe_save(
+        self,
+        *,
+        split: str,
+        metric: str,
+        value: float,
+        epoch: int,
+        model,
+        optimiser,
+    ) -> bool:
+        key = (split, metric)
+        if key not in self._criteria:
+            raise KeyError(f"Unsupported checkpoint key {key}")
+        if value is None or not math.isfinite(value):
+            return False
+
+        criterion = self._criteria[key]
+        records = self._records[key]
+        directory = self.root / split / metric
+        directory.mkdir(parents=True, exist_ok=True)
+        filename = f"epoch_{epoch:03d}_{value:.4f}.pth"
+        path = directory / filename
+
+        save_checkpoint(
+            model,
+            optimiser,
+            epoch,
+            path,
+            metadata={
+                "split": split,
+                "metric": metric,
+                "value": float(value),
+                "timestamp": time.time(),
+            },
+        )
+
+        entry: Dict[str, Union[float, Path, int]] = {
+            "value": float(value),
+            "path": path,
+            "epoch": epoch,
+        }
+        records.append(entry)
+        records.sort(key=lambda item: item["value"], reverse=(criterion == "max"))
+
+        removed: List[Dict[str, Union[float, Path, int]]] = []
+        while len(records) > self.max_keep:
+            removed.append(records.pop(-1))
+
+        for item in removed:
+            ckpt_path = item["path"]
+            if isinstance(ckpt_path, Path) and ckpt_path.exists():
+                ckpt_path.unlink()
+                if self.logger is not None:
+                    self.logger.info(
+                        "Removed checkpoint %s to maintain top %d for %s/%s",
+                        ckpt_path,
+                        self.max_keep,
+                        split,
+                        metric,
+                    )
+
+        if entry in records:
+            if self.logger is not None:
+                self.logger.info(
+                    "Saved checkpoint for %s %s (value=%.4f) at %s",
+                    split,
+                    metric,
+                    value,
+                    path,
+                )
+            return True
+
+        if path.exists():
+            path.unlink()
+        return False
 
 def _unwrap_data_container(value):
     """Recursively unwrap MMCV DataContainer/list wrappers to a tensor."""
@@ -153,16 +265,34 @@ def _tensor_from_batch(batch, key: str, device: torch.device) -> torch.Tensor:
     return tensor.to(device)
 
 
-def validate(model, data_loader, metric_logger: FacadeMetricLogger, device: torch.device) -> Dict[str, float]:
+def validate(
+    model,
+    data_loader,
+    metric_logger: FacadeMetricLogger,
+    device: torch.device,
+) -> Dict[str, float]:
     model.eval()
     metric_logger.reset()
+    total_loss = 0.0
+    num_batches = 0
     with torch.no_grad():
         for data in tqdm(data_loader, desc="Validating", leave=False):
             img = _tensor_from_batch(data, 'img', device)
             target = _tensor_from_batch(data, 'gt_semantic_seg', device).squeeze(1).long()
-            logits = model.forward_train(img)
-            metric_logger.update(logits, target)
-    return metric_logger.compute()
+            outputs = model.training_step(img, target)
+            loss = outputs.get("loss")
+            logits = outputs.get("logits")
+            if loss is not None:
+                total_loss += loss.item()
+                num_batches += 1
+            if logits is not None:
+                metric_logger.update(logits.detach(), target)
+    metrics = metric_logger.compute()
+    if num_batches > 0:
+        metrics["loss"] = total_loss / num_batches
+    else:
+        metrics["loss"] = float("nan")
+    return metrics
 
 
 def train(cfg) -> None:
@@ -210,6 +340,13 @@ def train(cfg) -> None:
         confusion_dir = Path(confusion_dir)
         confusion_dir.mkdir(parents=True, exist_ok=True)
 
+    max_best_checkpoints = getattr(cfg.training, "max_best_checkpoints", 5)
+    checkpoint_manager = BestCheckpointManager(
+        Path(cfg.training.checkpoint_dir),
+        max_keep=max_best_checkpoints,
+        logger=logger,
+    )
+
     for epoch in range(1, cfg.training.max_epochs + 1):
         model.train()
         train_metric_logger.reset()
@@ -241,15 +378,38 @@ def train(cfg) -> None:
                 progress.set_postfix(loss=loss.item(), avg_loss=epoch_loss / num_batches)
 
         elapsed = time.time() - start_time
-        logger.info(f"Epoch {epoch} finished: loss={epoch_loss/num_batches:.4f} time={elapsed:.1f}s")
+        average_train_loss = epoch_loss / max(num_batches, 1)
+        logger.info(
+            f"Epoch {epoch} finished: loss={average_train_loss:.4f} time={elapsed:.1f}s"
+        )
 
         train_metrics = train_metric_logger.compute()
+        train_metrics["loss"] = average_train_loss
         logger.info(f"Training metrics at epoch {epoch}: {train_metrics}")
         logger.info(
             "Per-class IoU (train) at epoch %d: %s",
             epoch,
             {k: round(v, 4) for k, v in train_metric_logger.per_class_iou().items()},
         )
+
+        checkpoint_manager.maybe_save(
+            split="train",
+            metric="loss",
+            value=average_train_loss,
+            epoch=epoch,
+            model=model,
+            optimiser=optimiser,
+        )
+        train_miou = train_metrics.get("mIoU")
+        if train_miou is not None:
+            checkpoint_manager.maybe_save(
+                split="train",
+                metric="mIoU",
+                value=float(train_miou),
+                epoch=epoch,
+                model=model,
+                optimiser=optimiser,
+            )
 
         if epoch % cfg.training.val_interval == 0:
             metrics = validate(model, val_loader, val_metric_logger, device)
@@ -265,6 +425,27 @@ def train(cfg) -> None:
                     class_names=class_names,
                 )
 
+            val_loss = metrics.get("loss")
+            if val_loss is not None:
+                checkpoint_manager.maybe_save(
+                    split="val",
+                    metric="loss",
+                    value=float(val_loss),
+                    epoch=epoch,
+                    model=model,
+                    optimiser=optimiser,
+                )
+            val_miou = metrics.get("mIoU")
+            if val_miou is not None:
+                checkpoint_manager.maybe_save(
+                    split="val",
+                    metric="mIoU",
+                    value=float(val_miou),
+                    epoch=epoch,
+                    model=model,
+                    optimiser=optimiser,
+                )
+
         if confusion_dir:
             train_metric_logger.export_confusion(
                 confusion_dir / f"train_epoch_{epoch:03d}.csv",
@@ -277,8 +458,6 @@ def train(cfg) -> None:
         else:
             current_lr = optimiser.param_groups[0]["lr"]
         logger.info("Learning rate after epoch %d: %.6e", epoch, current_lr)
-        ckpt_path = Path(cfg.training.checkpoint_dir) / f"epoch_{epoch:03d}.pth"
-        save_checkpoint(model, optimiser, epoch, ckpt_path)
 
 
 if __name__ == '__main__':
