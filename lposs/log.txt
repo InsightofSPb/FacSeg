@@ -8,3 +8,72 @@
 [2025-10-18 20:13:55 LPOSS] (main_eval.py 35): INFO Creating model:LPOSS
 [2025-10-18 20:17:08 LPOSS] (main_eval.py 33): INFO ### Validation dataset: cityscapes
 [2025-10-18 20:17:08 LPOSS] (main_eval.py 35): INFO Creating model:LPOSS
+[2025-10-18 20:26:00 LPOSS] (main_eval.py 33): INFO ### Validation dataset: cityscapes
+[2025-10-18 20:26:00 LPOSS] (main_eval.py 35): INFO Creating model:LPOSS
+[2025-10-18 20:34:40 LPOSS] (logging.py 102): INFO per class results:
+[2025-10-18 20:34:40 LPOSS] (logging.py 102): INFO 
++---------------+-------+-------+
+|     Class     |  IoU  |  Acc  |
++---------------+-------+-------+
+|      road     | 82.29 | 89.91 |
+|    sidewalk   | 24.78 | 40.54 |
+|    building   | 72.73 | 94.54 |
+|      wall     | 33.96 | 46.56 |
+|     fence     | 28.91 |  33.7 |
+|      pole     | 16.75 |  38.6 |
+| traffic light | 13.54 | 16.66 |
+|  traffic sign | 22.58 | 25.26 |
+|   vegetation  | 70.54 | 74.79 |
+|    terrain    |  0.18 |  0.18 |
+|      sky      | 40.56 | 40.61 |
+|     person    | 26.33 | 29.31 |
+|     rider     |  7.31 |  7.63 |
+|      car      |  71.4 | 92.72 |
+|     truck     | 48.75 | 75.94 |
+|      bus      | 49.97 | 85.13 |
+|     train     |  5.14 |  5.63 |
+|   motorcycle  | 40.25 |  54.3 |
+|    bicycle    | 52.64 | 77.86 |
++---------------+-------+-------+
+[2025-10-18 20:34:40 LPOSS] (logging.py 102): INFO Summary:
+[2025-10-18 20:34:40 LPOSS] (logging.py 102): INFO 
++-------+------+-------+
+|  aAcc | mIoU |  mAcc |
++-------+------+-------+
+| 80.07 | 37.3 | 48.94 |
++-------+------+-------+
+[2025-10-18 20:34:40 LPOSS] (logging.py 102): INFO per class results:
+[2025-10-18 20:34:40 LPOSS] (logging.py 102): INFO 
++---------------+-------+-------+
+|     Class     |  IoU  |  Acc  |
++---------------+-------+-------+
+|      road     |  52.6 | 72.43 |
+|    sidewalk   | 21.02 | 34.87 |
+|    building   | 51.07 | 73.46 |
+|      wall     | 20.66 | 28.74 |
+|     fence     | 23.33 | 29.75 |
+|      pole     | 16.77 | 38.34 |
+| traffic light | 13.33 | 16.44 |
+|  traffic sign |  21.8 | 24.53 |
+|   vegetation  | 50.59 | 58.87 |
+|    terrain    |  0.18 |  0.18 |
+|      sky      | 29.77 | 31.96 |
+|     person    | 24.55 | 27.62 |
+|     rider     |  7.03 |  7.36 |
+|      car      | 51.76 |  75.4 |
+|     truck     | 29.93 | 56.09 |
+|      bus      | 34.53 | 70.62 |
+|     train     |  6.88 |  7.83 |
+|   motorcycle  | 37.69 | 51.84 |
+|    bicycle    | 46.08 |  68.4 |
++---------------+-------+-------+
+[2025-10-18 20:34:40 LPOSS] (logging.py 102): INFO Summary:
+[2025-10-18 20:34:40 LPOSS] (logging.py 102): INFO 
++-------+------+-------+
+|  aAcc | mIoU |  mAcc |
++-------+------+-------+
+| 60.52 | 28.4 | 40.78 |
++-------+------+-------+
+[2025-10-18 20:34:40 LPOSS] (main_eval.py 42): INFO [cityscapes] mIoU of 500 test images: 37.30%
+[2025-10-18 20:34:40 LPOSS] (main_eval.py 47): INFO [cityscapes] Boundary IoU of 500 test images: 28.40%
+[2025-10-18 20:34:40 LPOSS] (main_eval.py 121): INFO {'val/cityscapes_miou': 37.3, 'val/cityscapes_boundary_iou': 28.4, 'val/avg_miou': 37.3, 'val/avg_boundary_iou': 28.4}
