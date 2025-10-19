@@ -203,7 +203,7 @@ def train(cfg) -> None:
     )
     optimiser = model.configure_optimiser()
     scaler = GradScaler(enabled=torch.cuda.is_available())
-    metric_logger = FacadeMetricLogger(len(class_names))
+    metric_logger = FacadeMetricLogger(class_names)
 
     for epoch in range(1, cfg.training.max_epochs + 1):
         model.train()
