@@ -1,6 +1,7 @@
 import inspect
 import os, json, random, uuid
 from collections import defaultdict
+from typing import Optional
 
 import numpy as np
 import cv2
@@ -16,6 +17,133 @@ from utils.utils import (
     DEFAULT_CATEGORIES, load_aliases_json, _norm_name, remap_id_to_canonical,
     polygons_to_mask, save_overlay, hex_to_bgr, LS_PALETTE
 )
+
+
+def _merge_dicts(base: dict, override: dict) -> dict:
+    if not override:
+        return dict(base)
+    result = dict(base)
+    for key, value in (override or {}).items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _merge_dicts(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def _ensure_tuple(value, default=None, *, clamp_len: int = 0):
+    if value is None:
+        return default
+    if isinstance(value, (list, tuple)):
+        tup = tuple(value)
+    else:
+        tup = (value, value)
+    if clamp_len and tup and len(tup) != clamp_len:
+        if len(tup) > clamp_len:
+            tup = tup[:clamp_len]
+        else:
+            tup = tuple(list(tup) + [tup[-1]] * (clamp_len - len(tup)))
+    return tup
+
+
+DEFAULT_PREPARE_AUG = {
+    "train": {
+        "hflip_p": 0.5,
+        "vflip_p": 0.1,
+        "rot90_p": 0.2,
+        "perspective": {
+            "scale": (0.05, 0.12),
+            "keep_size": True,
+            "pad_mode": cv2.BORDER_REFLECT_101,
+            "p": 0.15,
+        },
+        "color_jitter": {
+            "p": 0.35,
+            "brightness": 0.3,
+            "contrast": 0.3,
+            "saturation": 0.2,
+            "hue": 0.08,
+        },
+        "random_brightness_contrast": {
+            "p": 0.3,
+            "brightness_limit": 0.3,
+            "contrast_limit": 0.3,
+        },
+        "random_gamma": {
+            "gamma_limit": (90, 110),
+            "p": 0.3,
+        },
+        "motion_blur": {
+            "blur_limit": (3, 7),
+            "p": 0.12,
+        },
+        "gaussian_blur": {
+            "blur_limit": (3, 5),
+            "p": 0.1,
+        },
+    },
+    "val": {},
+    "test": {
+        "motion_blur": {
+            "blur_limit": (3, 5),
+            "p": 0.05,
+        },
+        "gaussian_blur": {
+            "blur_limit": (3, 3),
+            "p": 0.05,
+        },
+    },
+}
+
+
+DEFAULT_DATASET_AUG = {
+    "train": {
+        "hflip_p": 0.5,
+        "vflip_p": 0.1,
+        "perspective": {
+            "scale": (0.05, 0.12),
+            "keep_size": True,
+            "pad_mode": cv2.BORDER_REFLECT_101,
+            "p": 0.18,
+        },
+        "shift_scale_rotate": {
+            "shift_limit": 0.05,
+            "scale_limit": 0.2,
+            "rotate_limit": 15,
+            "p": 0.5,
+            "border_mode": cv2.BORDER_REFLECT_101,
+        },
+        "motion_blur": {
+            "blur_limit": (3, 7),
+            "p": 0.1,
+        },
+        "color_aug_p": 0.4,
+        "color_jitter": {
+            "brightness": 0.3,
+            "contrast": 0.3,
+            "saturation": 0.25,
+            "hue": 0.08,
+        },
+        "random_brightness_contrast": {
+            "brightness_limit": 0.3,
+            "contrast_limit": 0.3,
+        },
+        "hsv": {
+            "hue_shift_limit": 10,
+            "sat_shift_limit": 15,
+            "val_shift_limit": 10,
+        },
+        "rgb_shift": {
+            "r_shift_limit": 10,
+            "g_shift_limit": 10,
+            "b_shift_limit": 10,
+        },
+        "random_gamma": {
+            "gamma_limit": (90, 110),
+        },
+    },
+    "val": {},
+}
 
 
 def _resolve_coco_classes(coco: dict, aliases_tbl=None):
@@ -179,23 +307,78 @@ class SegIndex:
         tr_idx = sorted(ids[val_n:])
         return tr_idx, va_idx
 
-def build_prepare_tf(split: str, norm_mode: str, include_normalize: bool = True):
+def build_prepare_tf(split: str, norm_mode: str, include_normalize: bool = True, aug_config: Optional[dict] = None):
     split = (split or "train").lower()
+    cfg = _merge_dicts(DEFAULT_PREPARE_AUG.get(split, {}), (aug_config or {}).get(split, {}))
     if split == "train":
         aug = [
-            A.HorizontalFlip(p=0.5),
-            A.VerticalFlip(p=0.1),
-            A.RandomRotate90(p=0.2),
-            A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.5),
-            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.3),
-            A.GaussianBlur(blur_limit=(3, 5), p=0.1),
+            A.HorizontalFlip(p=cfg.get("hflip_p", 0.5)),
+            A.VerticalFlip(p=cfg.get("vflip_p", 0.1)),
+            A.RandomRotate90(p=cfg.get("rot90_p", 0.2)),
         ]
-    elif split == "val":
+
+        persp = cfg.get("perspective", {})
+        if persp.get("p", 0) > 0:
+            aug.append(A.Perspective(
+                scale=_ensure_tuple(persp.get("scale"), (0.05, 0.12), clamp_len=2),
+                keep_size=persp.get("keep_size", True),
+                pad_mode=persp.get("pad_mode", cv2.BORDER_REFLECT_101),
+                p=persp.get("p", 0.15),
+            ))
+
+        color_jit = cfg.get("color_jitter", {})
+        if color_jit.get("p", 0) > 0:
+            aug.append(A.ColorJitter(
+                brightness=color_jit.get("brightness", 0.3),
+                contrast=color_jit.get("contrast", 0.3),
+                saturation=color_jit.get("saturation", 0.2),
+                hue=color_jit.get("hue", 0.08),
+                p=color_jit.get("p", 0.35),
+            ))
+
+        rand_bc = cfg.get("random_brightness_contrast", {})
+        if rand_bc.get("p", 0) > 0:
+            aug.append(A.RandomBrightnessContrast(
+                brightness_limit=rand_bc.get("brightness_limit", 0.3),
+                contrast_limit=rand_bc.get("contrast_limit", 0.3),
+                p=rand_bc.get("p", 0.3),
+            ))
+
+        rand_gamma = cfg.get("random_gamma", {})
+        if rand_gamma.get("p", 0) > 0:
+            aug.append(A.RandomGamma(
+                gamma_limit=_ensure_tuple(rand_gamma.get("gamma_limit"), (90, 110), clamp_len=2),
+                gain=rand_gamma.get("gain", 1.0),
+                p=rand_gamma.get("p", 0.3),
+            ))
+
+        motion_blur = cfg.get("motion_blur", {})
+        if motion_blur.get("p", 0) > 0:
+            aug.append(A.MotionBlur(
+                blur_limit=_ensure_tuple(motion_blur.get("blur_limit"), (3, 7), clamp_len=2),
+                p=motion_blur.get("p", 0.12),
+            ))
+
+        gauss_blur = cfg.get("gaussian_blur", {})
+        if gauss_blur.get("p", 0) > 0:
+            aug.append(A.GaussianBlur(
+                blur_limit=_ensure_tuple(gauss_blur.get("blur_limit"), (3, 5), clamp_len=2),
+                p=gauss_blur.get("p", 0.1),
+            ))
+    else:  # val, test и fallback
         aug = []
-    else:  # test and fallback
-        aug = [
-            A.GaussianBlur(blur_limit=(3, 3), p=0.05),
-        ]
+        motion_blur = cfg.get("motion_blur", {})
+        if motion_blur.get("p", 0) > 0:
+            aug.append(A.MotionBlur(
+                blur_limit=_ensure_tuple(motion_blur.get("blur_limit"), (3, 5), clamp_len=2),
+                p=motion_blur.get("p", 0.05),
+            ))
+        gauss_blur = cfg.get("gaussian_blur", {})
+        if gauss_blur.get("p", 0) > 0:
+            aug.append(A.GaussianBlur(
+                blur_limit=_ensure_tuple(gauss_blur.get("blur_limit"), (3, 3), clamp_len=2),
+                p=gauss_blur.get("p", 0.05),
+            ))
     if include_normalize:
         if norm_mode == "clip":
             aug.append(A.Normalize(mean=CLIP_MEAN, std=CLIP_STD, max_pixel_value=255.0))
@@ -222,8 +405,9 @@ def _make_random_resized_crop(size: int):
         interpolation=cv2.INTER_LINEAR,
     )
 
-def _build_tf(train: bool, size: int, norm_mode: str, include_normalize: bool = True):
+def _build_tf(train: bool, size: int, norm_mode: str, include_normalize: bool = True, aug_config: Optional[dict] = None):
     if train:
+        cfg = _merge_dicts(DEFAULT_DATASET_AUG.get("train", {}), (aug_config or {}).get("train", {}))
         resize_or_crop = A.OneOf([
             _make_random_resized_crop(size),
             A.Compose([
@@ -237,25 +421,69 @@ def _build_tf(train: bool, size: int, norm_mode: str, include_normalize: bool = 
         ], p=1.0)
 
         color_aug = A.OneOf([
-            A.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.25, hue=0.1, p=0.2),
-            A.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=0.2),
-            A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=15, val_shift_limit=10, p=0.2),
-            A.RGBShift(r_shift_limit=10, g_shift_limit=10, b_shift_limit=10, p=0.2),
-        ], p=0.7)
+            A.ColorJitter(
+                brightness=cfg.get("color_jitter", {}).get("brightness", 0.3),
+                contrast=cfg.get("color_jitter", {}).get("contrast", 0.3),
+                saturation=cfg.get("color_jitter", {}).get("saturation", 0.25),
+                hue=cfg.get("color_jitter", {}).get("hue", 0.08),
+                p=cfg.get("color_jitter", {}).get("p", 1.0),
+            ),
+            A.RandomBrightnessContrast(
+                brightness_limit=cfg.get("random_brightness_contrast", {}).get("brightness_limit", 0.3),
+                contrast_limit=cfg.get("random_brightness_contrast", {}).get("contrast_limit", 0.3),
+                p=cfg.get("random_brightness_contrast", {}).get("p", 1.0),
+            ),
+            A.HueSaturationValue(
+                hue_shift_limit=cfg.get("hsv", {}).get("hue_shift_limit", 10),
+                sat_shift_limit=cfg.get("hsv", {}).get("sat_shift_limit", 15),
+                val_shift_limit=cfg.get("hsv", {}).get("val_shift_limit", 10),
+                p=cfg.get("hsv", {}).get("p", 1.0),
+            ),
+            A.RGBShift(
+                r_shift_limit=cfg.get("rgb_shift", {}).get("r_shift_limit", 10),
+                g_shift_limit=cfg.get("rgb_shift", {}).get("g_shift_limit", 10),
+                b_shift_limit=cfg.get("rgb_shift", {}).get("b_shift_limit", 10),
+                p=cfg.get("rgb_shift", {}).get("p", 1.0),
+            ),
+            A.RandomGamma(
+                gamma_limit=_ensure_tuple(cfg.get("random_gamma", {}).get("gamma_limit"), (90, 110), clamp_len=2),
+                gain=cfg.get("random_gamma", {}).get("gain", 1.0),
+                p=cfg.get("random_gamma", {}).get("p", 1.0),
+            ),
+        ], p=cfg.get("color_aug_p", 0.4))
 
         aug = [
             resize_or_crop,
-            A.HorizontalFlip(p=0.5),
-            A.VerticalFlip(p=0.1),
-            A.ShiftScaleRotate(
-                shift_limit=0.05,
-                scale_limit=0.2,
-                rotate_limit=15,
-                p=0.5,
-                border_mode=cv2.BORDER_REFLECT_101,
-            ),
-            color_aug,
+            A.HorizontalFlip(p=cfg.get("hflip_p", 0.5)),
+            A.VerticalFlip(p=cfg.get("vflip_p", 0.1)),
         ]
+
+        persp = cfg.get("perspective", {})
+        if persp.get("p", 0) > 0:
+            aug.append(A.Perspective(
+                scale=_ensure_tuple(persp.get("scale"), (0.05, 0.12), clamp_len=2),
+                keep_size=persp.get("keep_size", True),
+                pad_mode=persp.get("pad_mode", cv2.BORDER_REFLECT_101),
+                p=persp.get("p", 0.18),
+            ))
+
+        ssr = cfg.get("shift_scale_rotate", {})
+        aug.append(A.ShiftScaleRotate(
+            shift_limit=ssr.get("shift_limit", 0.05),
+            scale_limit=ssr.get("scale_limit", 0.2),
+            rotate_limit=ssr.get("rotate_limit", 15),
+            p=ssr.get("p", 0.5),
+            border_mode=ssr.get("border_mode", cv2.BORDER_REFLECT_101),
+        ))
+
+        motion_blur = cfg.get("motion_blur", {})
+        if motion_blur.get("p", 0) > 0:
+            aug.append(A.MotionBlur(
+                blur_limit=_ensure_tuple(motion_blur.get("blur_limit"), (3, 7), clamp_len=2),
+                p=motion_blur.get("p", 0.1),
+            ))
+
+        aug.append(color_aug)
     else:
         aug = [
             A.LongestMaxSize(max_size=size),
@@ -303,10 +531,16 @@ def _to_serializable(obj):
     return obj
 class SegDataset(Dataset):
     def __init__(self, seg_index: SegIndex, idxs, train: bool, size: int, norm_mode: str = "clip",
-                 aug_dump_dir: str = "", aug_dump_limit: int = 0):
+                 aug_dump_dir: str = "", aug_dump_limit: int = 0, aug_config: Optional[dict] = None):
         self.si = seg_index
         self.idxs = list(idxs)
-        self.tf, self.normalize_tf = _build_tf(train, size, norm_mode, include_normalize=True)
+        self.tf, self.normalize_tf = _build_tf(
+            train,
+            size,
+            norm_mode,
+            include_normalize=True,
+            aug_config=aug_config,
+        )
         self.to_tensor = ToTensorV2(transpose_mask=False)
         self.dump_dir = aug_dump_dir or ""
         self.dump_limit = int(aug_dump_limit) if aug_dump_limit else 0
