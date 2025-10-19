@@ -13,10 +13,10 @@ model:
   vit_patch_size: 16
   enc_type_feats: "v"
   trainable_decode_head: true
-  unfreeze_clip_backbone: false
+  unfreeze_clip_backbone: true
   optimisation:
     lr: 5.0e-5
-    weight_decay: 0.0
+    weight_decay: 1.0e-4
     ignore_index: 255
 
 alpha: 0.95
@@ -24,7 +24,7 @@ gamma: 3.0
 k: 400
 sigma: 0.01
 pix_dist_pow: 1.0
-pixel_refine: false
+pixel_refine: true
 tau: 0.01
 r: 13
 
