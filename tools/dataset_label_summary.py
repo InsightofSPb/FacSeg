@@ -245,7 +245,9 @@ def collect_label_samples(
         grouped = _group_geometries_by_label(pairs)
         image_path = _resolve_image_path(ann_path, annotation_root, image_root, image_extensions)
         for label, geometries in grouped.items():
-            label_to_samples[label].append(LabelSample(ann_path=ann_path, image_path=image_path, geometries=geometries))
+            label_to_samples[label].append(
+                LabelSample(annotation_path=ann_path, image_path=image_path, geometries=geometries)
+            )
 
     for label, samples in label_to_samples.items():
         samples.sort(key=lambda sample: (
