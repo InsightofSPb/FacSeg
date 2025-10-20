@@ -132,17 +132,46 @@ supports three dataset flavours:
 * `mask-png` &mdash; paired image/mask datasets where each mask encodes class IDs as
   pixel values (e.g., `portrait_spalling_cracks`).
 
-Key capabilities:
+### What the script does
 
-* Applies a user-provided class mapping (raw label &rarr; target label) or mask
-  value mapping (pixel value &rarr; target label).
-* Cuts large images into tiles with configurable size, stride, overlap, and
-  optional padding for smaller inputs.
-* Optionally keeps tiles with no foreground (`--keep-empty`) or filters them via
-  `--min-coverage`.
-* Generates QA overlays for every saved crop (`--overlay-dir`).
-* Offline augmentations: `cutout`, `cutblur`, and `cutmix`, each of which can
-  produce multiple augmented copies per tile (`--augmentations-per-tile`).
+1. Resolves companion images/annotations depending on the dataset type.
+2. Converts raw annotations into class-index masks using the supplied mapping
+   (`--class-mapping` or `--mask-value-mapping`).
+3. Splits every image/mask pair into tiles using the requested tile size,
+   stride, padding, and foreground filters.
+4. Optionally applies offline augmentations (`cutout`, `cutblur`, `cutmix`) and
+   writes augmented copies alongside the base tiles.
+5. Saves crops to `output/images/` and `output/masks/`, renders QA overlays when
+   `--overlay-dir` is given, and (optionally) records tile statistics in a JSON
+   manifest (`--metadata`).
+
+Each run prints a concise configuration summary up front and reports how many
+tiles were produced per class when finished, so you can immediately check that
+the mapping and thresholds are correct.
+
+### Required inputs per dataset type
+
+| `--dataset-type` | Must provide | Notes |
+|------------------|--------------|-------|
+| `json-polygons`  | `--annotations-dir` with `.json` files<br>`--class-mapping` | Rasterises polygons/rectangles into masks. |
+| `xml-bboxes`     | `--annotations-dir` with Pascal VOC `.xml` files<br>`--class-mapping` | Converts bounding boxes into filled mask regions. |
+| `mask-png`       | `--masks-dir` with mask images<br>`--mask-value-mapping` | Reads existing masks and remaps pixel values. |
+
+OpenCV (`opencv-python`) is required because the script relies on it for image
+IO and geometric rasterisation.
+
+### Commonly used flags
+
+* `--tile-size H W` / `--stride SY SX` &mdash; control crop size and overlap.
+* `--pad` &mdash; pad smaller images instead of skipping them.
+* `--min-coverage` &mdash; minimum fraction of foreground pixels a tile must contain
+  (use `--keep-empty` to keep the filtered-out crops).
+* `--overlay-dir path/` &mdash; store blended QA previews that colourise every class
+  in the generated mask.
+* `--augmentations cutout cutmix` &mdash; enable one or more offline augmentations
+  (`--augmentations-per-tile` duplicates each augmentation that many times).
+* `--metadata manifest.json` &mdash; save run statistics (tile counts, pixel counts,
+  configuration) for later auditing.
 
 ### Example: tiling DACL10K polygons
 
@@ -157,6 +186,8 @@ python tools/prepare_dataset_tiles.py \
   --stride 768 768 \
   --min-coverage 0.01 \
   --pad \
+  --augmentations cutout \
+  --augmentations-per-tile 2 \
   --overlay-dir /path/to/output/dacl10k_tiles/overlays \
   --metadata /path/to/output/dacl10k_tiles/manifest.json
 ```
@@ -192,7 +223,80 @@ python tools/prepare_dataset_tiles.py \
 The script writes cropped images to `output_dir/images/`, masks to
 `output_dir/masks/`, and (optionally) overlays to the directory specified via
 `--overlay-dir`. A manifest with aggregated tile statistics can be written via
-`--metadata`.
+`--metadata`. The closing summary printed to stdout shows the number of tiles
+generated for each target class and reminds you where the artefacts were stored.
+
+### Quick recipe: from filtering to training
+
+The commands below mirror the exact folders you mentioned so you can go from
+raw DACL10K annotations + personal facade imagery to a train/val dataset that
+matches the model’s `1024×1024` training scale【F:lposs/segmentation/configs/_base_/datasets/facade_damage.py†L37-L61】.
+
+1. **Filter DACL10K to the agreed FacSeg classes** (train/val similarly) so only
+   images containing mapped defects remain:
+
+   ```bash
+   python tools/filter_dataset_by_mapping.py \
+     /home/sasha/Facade_segmentation/datasets/dacl10k/train/img \
+     /home/sasha/Facade_segmentation/datasets/filtered_dacl10k/train \
+     --dataset-type json-polygons \
+     --annotations-dir /home/sasha/Facade_segmentation/datasets/dacl10k/train/ann \
+     --class-mapping tools/mappings/dacl10k_to_facseg.json \
+     --copy-mode symlink
+   ```
+
+2. **Tile the filtered DACL10K split** with overlap and offline augmentations.
+   A `1024×1024` tile size keeps the same scale the training pipeline expects,
+   while a `768` stride ensures large images are fully covered with 25 % overlap:
+
+   ```bash
+   python tools/prepare_dataset_tiles.py \
+     /home/sasha/Facade_segmentation/datasets/filtered_dacl10k/train/images \
+     /home/sasha/Facade_segmentation/tiles/dacl10k/train \
+     --dataset-type json-polygons \
+     --annotations-dir /home/sasha/Facade_segmentation/datasets/filtered_dacl10k/train/annotations \
+     --class-mapping tools/mappings/dacl10k_to_facseg.json \
+     --tile-size 1024 1024 \
+     --stride 768 768 \
+     --pad \
+     --min-coverage 0.01 \
+     --augmentations cutout cutmix cutblur \
+     --augmentations-per-tile 1 \
+     --overlay-dir /home/sasha/Facade_segmentation/tiles/dacl10k/train/overlays \
+     --metadata /home/sasha/Facade_segmentation/tiles/dacl10k/train/manifest.json
+   ```
+
+3. **Tile your own / internet facades** once their masks are prepared (pixel
+   IDs mapped via `portrait_spalling_cracks_values.json` if they follow the same
+   scheme). Adjust the `--masks-dir` to wherever the aligned PNG masks reside:
+
+   ```bash
+   python tools/prepare_dataset_tiles.py \
+     /home/sasha/Facade_segmentation/datasets/raw_images \
+     /home/sasha/Facade_segmentation/tiles/raw_facades \
+     --dataset-type mask-png \
+     --masks-dir /home/sasha/Facade_segmentation/datasets/raw_masks \
+     --mask-value-mapping tools/mappings/portrait_spalling_cracks_values.json \
+     --tile-size 1024 1024 \
+     --stride 768 768 \
+     --pad \
+     --augmentations cutout cutmix cutblur \
+     --overlay-dir /home/sasha/Facade_segmentation/tiles/raw_facades/overlays \
+     --metadata /home/sasha/Facade_segmentation/tiles/raw_facades/manifest.json
+   ```
+
+4. **Launch training** once the tiled outputs are copied/merged into
+   `data/facade_damage/images/{train,val}` and `masks/{train,val}` (see previous
+   section). The baseline configuration reads the prepared dataset directly:
+
+   ```bash
+   python main.py --config lposs/configs/facade_baseline.yaml \
+     training.dataset.data_root=/home/sasha/Facade_segmentation/dataset_final
+   ```
+
+Adjust the destination folders if you prefer different aggregation points for
+train/val tiles. Repeat steps 1–3 for each split (e.g. replace `train` with
+`val`) before triggering the final training command.
 
 ## DACL10K tiling helper
 

@@ -1,5 +1,24 @@
 #!/usr/bin/env python3
-"""Unified dataset tiler that supports multiple annotation formats and augmentations."""
+"""Unified dataset tiler that supports multiple annotation formats and augmentations.
+
+This helper script bridges disparate facade datasets by generating
+segmentation-ready crops from polygon JSON annotations (e.g. DACL10K), Pascal
+VOC XML bounding boxes (e.g. Prova), or paired mask PNG datasets (e.g.
+portrait_spalling_cracks). Beyond tiling it can create QA overlays, collect per
+class statistics, and synthesise offline augmentations such as CutMix.
+
+Typical workflow::
+
+    python tools/prepare_dataset_tiles.py \
+        path/to/images path/to/output \
+        --dataset-type json-polygons \
+        --annotations-dir path/to/annotations \
+        --class-mapping tools/mappings/dacl10k_to_facseg.json
+
+The script writes crops into ``output/images`` and masks into ``output/masks``.
+If ``--overlay-dir`` is provided, blended QA previews are stored there. A JSON
+manifest with aggregate statistics is written when ``--metadata`` is supplied.
+"""
 
 from __future__ import annotations
 
@@ -612,6 +631,33 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     buffer: Deque[TileRecord] = deque(maxlen=args.cutmix_buffer)
     augment_per_tile = max(1, int(args.augmentations_per_tile))
 
+    print("[prepare_dataset_tiles] Configuration summary:")
+    print(f"  dataset_type: {dataset_type}")
+    print(f"  images_dir:   {args.images_dir}")
+    if annotations_dir:
+        print(f"  annotations:  {annotations_dir}")
+    if args.masks_dir:
+        print(f"  masks_dir:    {args.masks_dir}")
+    print(f"  output_dir:   {args.output_dir}")
+    print(f"  tile_size:    {tile_spec.height}x{tile_spec.width}")
+    print(f"  stride:       {tile_spec.stride_y}x{tile_spec.stride_x}")
+    print(f"  pad:          {tile_spec.pad}")
+    print(f"  min_coverage: {args.min_coverage}")
+    print(f"  keep_empty:   {bool(args.keep_empty)}")
+    if augmentations:
+        print(
+            "  augmentations: "
+            + ", ".join(
+                f"{name}×{augment_per_tile}" for name in sorted(augmentations)
+            )
+        )
+    else:
+        print("  augmentations: (none)")
+    if args.overlay_dir:
+        print(f"  overlays -> {args.overlay_dir}")
+    if args.metadata:
+        print(f"  manifest -> {args.metadata}")
+
     if dataset_type == "mask-png":
         iterator = tqdm(image_paths, desc="Tiling", unit="img")
         for image_path in iterator:
@@ -723,7 +769,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         buffer.append(aug_tile)
 
     if args.metadata:
-        args.metadata.write_text(json.dumps(metadata, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        args.metadata.write_text(
+            json.dumps(metadata, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+
+    print("[prepare_dataset_tiles] Finished:")
+    print(f"  tiles saved:     {metadata['total_tiles']}")
+    for name in unique_targets:
+        print(
+            f"    {name}: {metadata['per_class_tiles'][name]} tiles, "
+            f"{metadata['per_class_pixels'][name]} foreground pixels"
+        )
+    print(f"  images -> {args.output_dir / 'images'}")
+    print(f"  masks  -> {args.output_dir / 'masks'}")
+    if args.overlay_dir:
+        print(f"  overlays -> {args.overlay_dir}")
+    if args.metadata:
+        print(f"  manifest -> {args.metadata}")
 
     return 0
 
