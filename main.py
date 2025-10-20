@@ -1,4 +1,4 @@
-import os, json, argparse, random, sys, re
+import os, json, argparse, random, sys, re, math
 from collections import Counter
 import numpy as np
 import cv2
@@ -77,6 +77,8 @@ def parse_args():
     ap.add_argument("--ovseg_decoder_dropout", type=float, default=0.1)
     ap.add_argument("--train_miou_ratio", type=float, default=0.25,
                     help="Доля train для оценки mIoU/F1 после эпохи (0..1, 0=пропустить, 1=всё)")
+    ap.add_argument("--val_checks_per_epoch", type=int, default=1,
+                    help="Сколько раз запускать валидацию на эпоху (>=1)")
     # checkpoints
     ap.add_argument("--ckpt", type=str, default="", help="Path to load checkpoint for infer / resume")
     ap.add_argument("--prep_out_dir", type=str, default=DEFAULT_PREPARED_DIR,
@@ -592,7 +594,20 @@ def ovseg_train(args, device):
 
     for ep in range(1, args.epochs+1):
         model.train(); losses = []; seen = 0
-        for x, m, _ in tqdm(dl_tr, desc=f"OVSeg Train {ep}/{args.epochs}", leave=False):
+        steps_total = max(1, len(dl_tr))
+        checks = max(1, int(getattr(args, "val_checks_per_epoch", 1)))
+        check_points = {steps_total}
+        if len(dl_tr) > 0 and checks > 1:
+            for idx in range(1, checks):
+                step = math.ceil(idx * len(dl_tr) / checks)
+                check_points.add(min(steps_total, max(1, step)))
+        next_checks = iter(sorted(check_points))
+        next_check = next(next_checks, None)
+        last_val = None
+
+        for step, (x, m, _) in enumerate(
+            tqdm(dl_tr, desc=f"OVSeg Train {ep}/{args.epochs}", leave=False), start=1
+        ):
             x = x.to(device); m = m.to(device).long()
             out = model(x)["out"]
             if out.shape[-2:] != m.shape[-2:]:
@@ -600,12 +615,37 @@ def ovseg_train(args, device):
             loss = criterion(out, m)
             opt.zero_grad(); loss.backward(); opt.step()
             losses.append(float(loss.item())); seen += x.size(0)
+            while next_check is not None and step >= next_check:
+                val_loss, m_val, K = evaluate_segmentation_full(model, dl_va, device, criterion)
+                print(
+                    f"[ep {ep:03d}] val@{step}/{steps_total}: "
+                    f"loss={val_loss:.4f}  pixel_acc={m_val['pixel_acc']:.4f}  "
+                    f"mIoU={m_val['miou']:.4f}  F1={m_val['f1_macro']:.4f}"
+                )
+                last_val = (val_loss, m_val, K)
+                next_check = next(next_checks, None)
+
+        if len(dl_tr) == 0:
+            val_loss, m_val, K = evaluate_segmentation_full(model, dl_va, device, criterion)
+            print(
+                f"[ep {ep:03d}] val@0/{steps_total}: "
+                f"loss={val_loss:.4f}  pixel_acc={m_val['pixel_acc']:.4f}  "
+                f"mIoU={m_val['miou']:.4f}  F1={m_val['f1_macro']:.4f}"
+            )
+            last_val = (val_loss, m_val, K)
         avg_loss = (sum(losses) / max(1, len(losses)))
         print(f"[ep {ep:03d}] train_loss={avg_loss:.4f}")
 
         # validation metrics
-        val_loss, m, K = evaluate_segmentation_full(model, dl_va, device, criterion)
-        print(f"[ep {ep:03d}] val: loss={val_loss:.4f}  pixel_acc={m['pixel_acc']:.4f}  mIoU={m['miou']:.4f}  F1={m['f1_macro']:.4f}")
+        if last_val is None:
+            val_loss, m_val, K = evaluate_segmentation_full(model, dl_va, device, criterion)
+            print(
+                f"[ep {ep:03d}] val@{steps_total}/{steps_total}: "
+                f"loss={val_loss:.4f}  pixel_acc={m_val['pixel_acc']:.4f}  "
+                f"mIoU={m_val['miou']:.4f}  F1={m_val['f1_macro']:.4f}"
+            )
+        else:
+            val_loss, m_val, K = last_val
 
         # optional train metrics on a fraction
         frac = max(0.0, min(1.0, getattr(args, "train_miou_ratio", 0.0)))
@@ -629,8 +669,8 @@ def ovseg_train(args, device):
             print(f"[ep {ep:03d}] train[{tag}]: mIoU={mt['miou']:.4f}  F1={mt['f1_macro']:.4f}")
 
         extra_payload = {"classes": seg_index.classes}
-        ckpt_mgr_train.save(model.state_dict(), ep, avg_loss, m, extra=extra_payload)
-        ckpt_mgr_val.save(model.state_dict(), ep, m['miou'], m, extra=extra_payload)
+        ckpt_mgr_train.save(model.state_dict(), ep, avg_loss, m_val, extra=extra_payload)
+        ckpt_mgr_val.save(model.state_dict(), ep, m_val['miou'], m_val, extra=extra_payload)
 
         if ep in vis_epochs:
             has_val_samples = len(dl_va) > 0
