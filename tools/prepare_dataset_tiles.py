@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import sys
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -786,6 +787,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"  overlays -> {args.overlay_dir}")
     if args.metadata:
         print(f"  manifest -> {args.metadata}")
+
+    empty_classes = [name for name in unique_targets if metadata["per_class_pixels"][name] == 0]
+    if empty_classes:
+        print(
+            "[prepare_dataset_tiles] Warning: no foreground pixels were written for "
+            + ", ".join(empty_classes),
+            file=sys.stderr,
+        )
+
+    if metadata["total_tiles"] == 0:
+        raise RuntimeError(
+            "No tiles were generated. Check that your masks contain foreground pixels, "
+            "verify the --mask-value-mapping/--class-mapping, and consider lowering "
+            "--min-coverage or using --keep-empty."
+        )
 
     return 0
 
