@@ -435,6 +435,11 @@ def main(argv: List[str]) -> int:
 
     if args.viz_output:
         save_visualisations(label_to_samples, args.viz_output, args.samples_per_class)
+        print(f"Saved visual previews to: {args.viz_output.resolve()}")
+    else:
+        print(
+            "No visual previews were written (pass --viz-output <dir> to export per-class examples)."
+        )
         print(f"Visualisations saved to {args.viz_output}")
 
     if args.mapping_template:
