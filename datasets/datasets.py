@@ -13,6 +13,9 @@ from torch.utils.data import Dataset
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
+
+_RANDOM_GAMMA_SUPPORTS_GAIN = "gain" in inspect.signature(A.RandomGamma.__init__).parameters
+
 from utils.utils import (
     CLIP_MEAN,
     CLIP_STD,
@@ -571,11 +574,7 @@ def build_prepare_tf(split: str, norm_mode: str, include_normalize: bool = True,
 
         rand_gamma = cfg.get("random_gamma", {})
         if rand_gamma.get("p", 0) > 0:
-            aug.append(A.RandomGamma(
-                gamma_limit=_ensure_tuple(rand_gamma.get("gamma_limit"), (90, 110), clamp_len=2),
-                gain=rand_gamma.get("gain", 1.0),
-                p=rand_gamma.get("p", 0.3),
-            ))
+            aug.append(_make_random_gamma(rand_gamma, default_p=0.3))
 
         motion_blur = cfg.get("motion_blur", {})
         if motion_blur.get("p", 0) > 0:
@@ -630,6 +629,18 @@ def _make_random_resized_crop(size: int):
         interpolation=cv2.INTER_LINEAR,
     )
 
+
+def _make_random_gamma(cfg: Optional[dict], *, default_p: float = 1.0, default_limit=(90, 110)):
+    cfg = cfg or {}
+    params = {
+        "gamma_limit": _ensure_tuple(cfg.get("gamma_limit"), default_limit, clamp_len=2),
+        "p": cfg.get("p", default_p),
+    }
+    if _RANDOM_GAMMA_SUPPORTS_GAIN:
+        params["gain"] = cfg.get("gain", 1.0)
+    return A.RandomGamma(**params)
+
+
 def _build_tf(train: bool, size: int, norm_mode: str, include_normalize: bool = True, aug_config: Optional[dict] = None):
     if train:
         cfg = _merge_dicts(DEFAULT_DATASET_AUG.get("train", {}), (aug_config or {}).get("train", {}))
@@ -670,11 +681,7 @@ def _build_tf(train: bool, size: int, norm_mode: str, include_normalize: bool = 
                 b_shift_limit=cfg.get("rgb_shift", {}).get("b_shift_limit", 10),
                 p=cfg.get("rgb_shift", {}).get("p", 1.0),
             ),
-            A.RandomGamma(
-                gamma_limit=_ensure_tuple(cfg.get("random_gamma", {}).get("gamma_limit"), (90, 110), clamp_len=2),
-                gain=cfg.get("random_gamma", {}).get("gain", 1.0),
-                p=cfg.get("random_gamma", {}).get("p", 1.0),
-            ),
+            _make_random_gamma(cfg.get("random_gamma", {}), default_p=1.0),
         ], p=cfg.get("color_aug_p", 0.4))
 
         aug = [
