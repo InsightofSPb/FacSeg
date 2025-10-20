@@ -422,7 +422,15 @@ class MaskTilesIndex:
             for name in value_map.values():
                 seen_classes.add(name)
 
-            for image_path, mask_path in _iter_tile_pairs(images_dir, masks_dir):
+            iterator = _iter_tile_pairs(images_dir, masks_dir)
+            root_label = root.name or str(root)
+            iterator = tqdm(
+                iterator,
+                desc=f"Index tiles ({root_label})",
+                unit="tile",
+                leave=False,
+            )
+            for image_path, mask_path in iterator:
                 mask = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
                 if mask is None:
                     continue
@@ -444,13 +452,15 @@ class MaskTilesIndex:
                         "value_map": value_map,
                         "keep_empty": keep_empty,
                         "root": root,
-                        "root_name": root.name or str(root),
+                        "root_name": root_label,
                         "images_dir": images_dir,
                         "nonzero_pixels": int(np.count_nonzero(mask)),
                     }
                 )
 
-            root_infos[root.name or str(root)] = {
+            iterator.close()
+
+            root_infos[root_label] = {
                 "images_dir": images_dir,
                 "masks_dir": masks_dir,
                 "path": root,
