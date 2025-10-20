@@ -77,6 +77,50 @@ Pass these JSON files to the tiling helper via `--class-mapping` or
 `--mask-value-mapping` to reuse the agreed mapping without rebuilding it from
 scratch.
 
+## Filtering raw datasets before tiling
+
+`tools/filter_dataset_by_mapping.py` scans annotations or masks, keeps only the
+files that contain classes present in your mapping, and copies/symlinks the
+matching images (and masks/annotations) into a clean output folder. This lets
+you prune large datasets before tiling so you do not waste time on irrelevant
+photos.
+
+```bash
+python tools/filter_dataset_by_mapping.py \
+  /path/to/dacl10k/train/img \
+  /path/to/dacl10k_filtered/train \
+  --dataset-type json-polygons \
+  --annotations-dir /path/to/dacl10k/train/ann \
+  --class-mapping tools/mappings/dacl10k_to_facseg.json \
+  --copy-mode symlink \
+  --manifest /path/to/dacl10k_filtered/train/summary.json
+```
+
+For Prova (Pascal VOC XML boxes):
+
+```bash
+python tools/filter_dataset_by_mapping.py \
+  /path/to/prova/images \
+  /path/to/prova_filtered \
+  --dataset-type xml-bboxes \
+  --annotations-dir /path/to/prova/annotations \
+  --class-mapping tools/mappings/prova_to_facseg.json
+```
+
+For portrait_spalling_cracks (mask PNGs):
+
+```bash
+python tools/filter_dataset_by_mapping.py \
+  /path/to/portrait/images \
+  /path/to/portrait_filtered \
+  --dataset-type mask-png \
+  --masks-dir /path/to/portrait/masks \
+  --mask-value-mapping tools/mappings/portrait_spalling_cracks_values.json
+```
+
+Pass `--dry-run` to only report how many files would be retained. Use
+`--copy-mode symlink` if you prefer lightweight symlinks over physical copies.
+
 ## Unified tiling & augmentation helper
 
 `tools/prepare_dataset_tiles.py` tiles raw images and annotations into
