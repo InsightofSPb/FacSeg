@@ -28,6 +28,12 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from utils.utils import DEFAULT_CATEGORIES, LS_PALETTE, hex_to_bgr, save_overlay
 
 

@@ -1,7 +1,8 @@
 import inspect
 import os, json, random, uuid
-from collections import defaultdict
-from typing import Optional
+from collections import Counter, defaultdict
+from pathlib import Path
+from typing import Dict, Optional, Sequence
 
 import numpy as np
 import cv2
@@ -13,10 +14,24 @@ import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
 from utils.utils import (
-    CLIP_MEAN, CLIP_STD, IMAGENET_MEAN, IMAGENET_STD,
-    DEFAULT_CATEGORIES, load_aliases_json, _norm_name, remap_id_to_canonical,
-    polygons_to_mask, save_overlay, hex_to_bgr, LS_PALETTE
+    CLIP_MEAN,
+    CLIP_STD,
+    IMAGENET_MEAN,
+    IMAGENET_STD,
+    DEFAULT_CATEGORIES,
+    LS_PALETTE,
+    _norm_name,
+    hex_to_bgr,
+    load_aliases_json,
+    polygons_to_mask,
+    remap_id_to_canonical,
+    save_overlay,
 )
+
+
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
+_MASK_EXTS = (".png", ".tif", ".tiff")
+_CANON_LOOKUP = {_norm_name(v): v for v in DEFAULT_CATEGORIES.values()}
 
 
 def _merge_dicts(base: dict, override: dict) -> dict:
@@ -270,6 +285,7 @@ class SegIndex:
 
         self.items = []
         canon_to_idx = {nm: i + 1 for i, nm in enumerate(self.classes)}  # 1..C
+        self.class_to_index = dict(canon_to_idx)
 
         for im in tqdm(self.images, desc="Index masks", unit="img"):
             H, W = int(im["height"]), int(im["width"])
@@ -297,6 +313,199 @@ class SegIndex:
             })
 
         assert len(self.items) > 0, "No valid items built (check paths and annotations)."
+        self.meta_by_path: Dict[str, Dict[str, str]] = {}
+        for rec in self.items:
+            try:
+                rel = os.path.relpath(rec["path"], images_dir)
+            except Exception:
+                rel = os.path.basename(rec["path"]) or rec["path"]
+            self.meta_by_path[rec["path"]] = {
+                "relative_path": rel.replace("\\", "/"),
+                "dataset": Path(images_dir).name or ".",
+            }
+
+    def split_by_images(self, val_ratio=0.25, seed=42):
+        n = len(self.items)
+        ids = list(range(n))
+        random.Random(seed).shuffle(ids)
+        val_n = max(1, int(round(val_ratio * n)))
+        va_idx = sorted(ids[:val_n])
+        tr_idx = sorted(ids[val_n:])
+        return tr_idx, va_idx
+
+
+def _canonicalise_class_name(name: str, aliases_tbl: Dict[str, str]) -> str:
+    norm = _norm_name(name)
+    mapped = aliases_tbl.get(norm, norm)
+    return _CANON_LOOKUP.get(mapped, name.strip() or f"class_{mapped}")
+
+
+def _iter_tile_pairs(images_dir: Path, masks_dir: Path):
+    mask_lookup: Dict[str, list] = defaultdict(list)
+    for mask_path in masks_dir.rglob("*"):
+        if mask_path.is_file() and mask_path.suffix.lower() in _MASK_EXTS:
+            mask_lookup[mask_path.stem].append(mask_path)
+
+    for image_path in images_dir.rglob("*"):
+        if not image_path.is_file() or image_path.suffix.lower() not in _IMAGE_EXTS:
+            continue
+        candidates = mask_lookup.get(image_path.stem, [])
+        if not candidates:
+            continue
+        if len(candidates) == 1:
+            mask_path = candidates[0]
+        else:
+            try:
+                rel = image_path.relative_to(images_dir)
+            except ValueError:
+                rel = Path(image_path.name)
+            target_parent = masks_dir / rel.parent
+            match = next((m for m in candidates if m.parent == target_parent), None)
+            mask_path = match or candidates[0]
+        yield image_path, mask_path
+
+
+class MaskTilesIndex:
+    """Index tiled datasets that provide ``images/`` + ``masks/`` directories."""
+
+    def __init__(self, roots: Sequence[str], class_aliases: str = "", *, expect_manifest: bool = True):
+        root_paths = [Path(r).expanduser() for r in (roots or []) if r]
+        if not root_paths:
+            raise ValueError("At least one tiles root must be supplied")
+
+        aliases_tbl = load_aliases_json(class_aliases) if class_aliases else {}
+        aliases_tbl = {k: v for k, v in aliases_tbl.items()}
+
+        records = []
+        seen_classes = set()
+        root_infos = {}
+        dropped_empty = Counter()
+
+        for root in root_paths:
+            if not root.exists():
+                raise FileNotFoundError(f"Tiles root '{root}' does not exist")
+            images_dir = root / "images"
+            masks_dir = root / "masks"
+            if not images_dir.exists() or not masks_dir.exists():
+                raise FileNotFoundError(
+                    f"Tiles root '{root}' must contain 'images/' and 'masks/' subdirectories"
+                )
+
+            manifest_path = root / "manifest.json"
+            value_map: Dict[int, str] = {}
+            keep_empty = False
+            if manifest_path.exists():
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+                for entry in manifest.get("classes", []):
+                    try:
+                        idx = int(entry.get("index", 0))
+                    except (TypeError, ValueError):
+                        continue
+                    if idx <= 0:
+                        continue
+                    raw_name = entry.get("name", f"class_{idx}")
+                    canon_name = _canonicalise_class_name(raw_name, aliases_tbl)
+                    value_map[idx] = canon_name
+                keep_empty = bool(manifest.get("keep_empty", False))
+            elif expect_manifest:
+                raise FileNotFoundError(
+                    f"Tiles root '{root}' is missing manifest.json. Re-run the tiler with --metadata."
+                )
+
+            if not value_map:
+                raise ValueError(
+                    f"Unable to determine class mapping for tiles in '{root}'. "
+                    "Ensure the tiler wrote a manifest with class indices."
+                )
+
+            for name in value_map.values():
+                seen_classes.add(name)
+
+            for image_path, mask_path in _iter_tile_pairs(images_dir, masks_dir):
+                mask = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
+                if mask is None:
+                    continue
+                if mask.ndim == 3:
+                    mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+                mask = mask.astype(np.int32, copy=False)
+                unique_values = set(int(v) for v in np.unique(mask) if int(v) != 0)
+                missing = sorted(v for v in unique_values if v not in value_map)
+                if missing:
+                    raise ValueError(
+                        f"Mask '{mask_path}' from '{root}' contains unmapped values: {missing}. "
+                        f"Update the manifest or regenerate the tiles with a complete class mapping."
+                    )
+
+                records.append(
+                    {
+                        "image_path": image_path,
+                        "mask": mask,
+                        "value_map": value_map,
+                        "keep_empty": keep_empty,
+                        "root": root,
+                        "root_name": root.name or str(root),
+                        "images_dir": images_dir,
+                    }
+                )
+
+            root_infos[root.name or str(root)] = {
+                "images_dir": images_dir,
+                "masks_dir": masks_dir,
+                "path": root,
+            }
+
+        if not records:
+            raise RuntimeError("No image/mask pairs found across the provided tile roots")
+
+        class_order = []
+        for key in sorted(DEFAULT_CATEGORIES.keys()):
+            name = DEFAULT_CATEGORIES[key]
+            if name in seen_classes:
+                class_order.append(name)
+        for name in sorted(seen_classes):
+            if name not in class_order:
+                class_order.append(name)
+
+        self.classes = class_order
+        self.num_classes = len(self.classes)
+        self.C = self.num_classes
+        self.class_to_index = {name: idx for idx, name in enumerate(self.classes, start=1)}
+        self.items = []
+        self.meta_by_path: Dict[str, Dict[str, str]] = {}
+        per_root_counts = Counter()
+
+        for rec in records:
+            mask = np.zeros_like(rec["mask"], dtype=np.uint8)
+            for value, name in rec["value_map"].items():
+                idx = self.class_to_index.get(name)
+                if idx is not None:
+                    mask[rec["mask"] == int(value)] = idx
+            if mask.sum() == 0 and not rec["keep_empty"]:
+                dropped_empty[rec["root_name"]] += 1
+                continue
+            path_str = str(rec["image_path"])
+            rel = rec["image_path"].relative_to(rec["images_dir"]).as_posix()
+            self.items.append(
+                {
+                    "path": path_str,
+                    "mask": mask,
+                    "dataset": rec["root_name"],
+                    "relative_path": rel,
+                }
+            )
+            self.meta_by_path[path_str] = {
+                "relative_path": rel,
+                "dataset": rec["root_name"],
+            }
+            per_root_counts[rec["root_name"]] += 1
+
+        if not self.items:
+            raise RuntimeError("No usable tiles remained after filtering out empty masks")
+
+        self.root_infos = root_infos
+        self.dropped_empty = dict(dropped_empty)
+        self.per_root_counts = dict(per_root_counts)
 
     def split_by_images(self, val_ratio=0.25, seed=42):
         n = len(self.items)
