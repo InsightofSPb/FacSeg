@@ -60,6 +60,23 @@ The samples printed for each label can be used to manually inspect
 representative files and verify class mappings, while the rendered previews
 provide immediate visual confirmation of the annotation quality.
 
+### Predefined mapping dictionaries
+
+Ready-to-use mappings that collapse raw dataset labels into the FacSeg target
+classes live under `tools/mappings/`:
+
+* `dacl10k_to_facseg.json` &mdash; remaps the 19 DACL10K labels into the seven
+  categories we keep for training (e.g. both `spalling` and `hollowareas`
+  become `SPALLING`).
+* `prova_to_facseg.json` &mdash; translates Pascal VOC class names from the Prova
+  dataset (bounding boxes) into the same FacSeg categories.
+* `portrait_spalling_cracks_values.json` &mdash; maps foreground pixel values in the
+  `portrait_spalling_cracks` masks to the `SPALLING` category.
+
+Pass these JSON files to the tiling helper via `--class-mapping` or
+`--mask-value-mapping` to reuse the agreed mapping without rebuilding it from
+scratch.
+
 ## Unified tiling & augmentation helper
 
 `tools/prepare_dataset_tiles.py` tiles raw images and annotations into
@@ -91,7 +108,7 @@ python tools/prepare_dataset_tiles.py \
   /path/to/output/dacl10k_tiles \
   --dataset-type json-polygons \
   --annotations-dir /path/to/dacl10k/annotations \
-  --class-mapping dacl10k_label_mapping.json \
+  --class-mapping tools/mappings/dacl10k_to_facseg.json \
   --tile-size 1024 1024 \
   --stride 768 768 \
   --min-coverage 0.01 \
@@ -108,7 +125,7 @@ python tools/prepare_dataset_tiles.py \
   /path/to/output/prova_tiles \
   --dataset-type xml-bboxes \
   --annotations-dir /path/to/prova/annotations \
-  --class-mapping prova_label_mapping.json \
+  --class-mapping tools/mappings/prova_to_facseg.json \
   --tile-size 512 512 \
   --augmentations cutout cutblur \
   --overlay-dir /path/to/output/prova_tiles/overlays
@@ -122,7 +139,7 @@ python tools/prepare_dataset_tiles.py \
   /path/to/output/portrait_tiles \
   --dataset-type mask-png \
   --masks-dir /path/to/portrait/masks \
-  --mask-value-mapping portrait_mask_values.json \
+  --mask-value-mapping tools/mappings/portrait_spalling_cracks_values.json \
   --tile-size 768 768 \
   --augmentations cutmix \
   --overlay-dir /path/to/output/portrait_tiles/overlays

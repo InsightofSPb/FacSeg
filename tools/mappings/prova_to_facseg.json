@@ -1,0 +1,12 @@
+{
+  "spalling": "SPALLING",
+  "exposed reinforcement": "SPALLING",
+  "exposed_reinforcement": "SPALLING",
+  "crack": "CRACK",
+  "efflorescence": "EFFLORESCENCE",
+  "corrosion": "CORROSION",
+  "rust": "CORROSION",
+  "delamination": "DELAMINATION",
+  "water stain": "WATER_STAIN",
+  "water_stain": "WATER_STAIN"
+}
