@@ -422,7 +422,15 @@ class MaskTilesIndex:
             for name in value_map.values():
                 seen_classes.add(name)
 
-            for image_path, mask_path in _iter_tile_pairs(images_dir, masks_dir):
+            iterator = _iter_tile_pairs(images_dir, masks_dir)
+            root_label = root.name or str(root)
+            iterator = tqdm(
+                iterator,
+                desc=f"Index tiles ({root_label})",
+                unit="tile",
+                leave=False,
+            )
+            for image_path, mask_path in iterator:
                 mask = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
                 if mask is None:
                     continue
@@ -440,16 +448,19 @@ class MaskTilesIndex:
                 records.append(
                     {
                         "image_path": image_path,
-                        "mask": mask,
+                        "mask_path": mask_path,
                         "value_map": value_map,
                         "keep_empty": keep_empty,
                         "root": root,
-                        "root_name": root.name or str(root),
+                        "root_name": root_label,
                         "images_dir": images_dir,
+                        "nonzero_pixels": int(np.count_nonzero(mask)),
                     }
                 )
 
-            root_infos[root.name or str(root)] = {
+            iterator.close()
+
+            root_infos[root_label] = {
                 "images_dir": images_dir,
                 "masks_dir": masks_dir,
                 "path": root,
@@ -476,20 +487,25 @@ class MaskTilesIndex:
         per_root_counts = Counter()
 
         for rec in records:
-            mask = np.zeros_like(rec["mask"], dtype=np.uint8)
+            mapping = {}
             for value, name in rec["value_map"].items():
                 idx = self.class_to_index.get(name)
                 if idx is not None:
-                    mask[rec["mask"] == int(value)] = idx
-            if mask.sum() == 0 and not rec["keep_empty"]:
+                    mapping[int(value)] = int(idx)
+            if not mapping:
+                continue
+
+            if rec.get("nonzero_pixels", 0) == 0 and not rec["keep_empty"]:
                 dropped_empty[rec["root_name"]] += 1
                 continue
+
             path_str = str(rec["image_path"])
             rel = rec["image_path"].relative_to(rec["images_dir"]).as_posix()
             self.items.append(
                 {
                     "path": path_str,
-                    "mask": mask,
+                    "mask_path": str(rec["mask_path"]),
+                    "value_map": mapping,
                     "dataset": rec["root_name"],
                     "relative_path": rel,
                 }
@@ -765,7 +781,7 @@ class SegDataset(Dataset):
         rec = self.si.items[self.idxs[i]]
         img = cv2.imread(rec["path"], cv2.IMREAD_COLOR)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        mask = rec["mask"]
+        mask = self._load_mask(rec)
         tfed = self.tf(image=img, mask=mask)
         aug_img = tfed["image"]
         aug_mask = tfed["mask"].astype(np.uint8)
@@ -781,11 +797,43 @@ class SegDataset(Dataset):
         m = torch.from_numpy(aug_mask.astype(np.int64, copy=False))
 
         if self.dump_enabled and self._dump_counter < self.dump_limit:
-            self._dump_sample(rec["path"], img, aug_img, aug_mask, replay)
+            self._dump_sample(
+                rec["path"],
+                rec.get("mask_path"),
+                img,
+                aug_img,
+                aug_mask,
+                replay,
+            )
 
         return x, m, rec["path"]
 
-    def _dump_sample(self, source_path, original_img, aug_img, aug_mask, replay):
+    def _load_mask(self, rec):
+        mask = rec.get("mask")
+        if isinstance(mask, np.ndarray):
+            return mask
+
+        mask_path = rec.get("mask_path")
+        if mask_path:
+            mask_arr = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
+            if mask_arr is None:
+                raise FileNotFoundError(f"Failed to read mask from '{mask_path}'")
+            if mask_arr.ndim == 3:
+                mask_arr = cv2.cvtColor(mask_arr, cv2.COLOR_BGR2GRAY)
+            mask_arr = mask_arr.astype(np.int32, copy=False)
+            mapping = rec.get("value_map") or {}
+            if mapping:
+                mapped = np.zeros_like(mask_arr, dtype=np.uint8)
+                for src_val, dst_idx in mapping.items():
+                    mapped[mask_arr == int(src_val)] = int(dst_idx)
+                mask_arr = mapped
+            else:
+                mask_arr = mask_arr.astype(np.uint8, copy=False)
+            return np.ascontiguousarray(mask_arr)
+
+        raise ValueError("Record does not contain mask data")
+
+    def _dump_sample(self, source_path, source_mask_path, original_img, aug_img, aug_mask, replay):
         idx = self._dump_counter
         self._dump_counter += 1
         base = os.path.splitext(os.path.basename(source_path))[0]
@@ -812,6 +860,7 @@ class SegDataset(Dataset):
         aug_h, aug_w = aug_mask.shape[:2]
         meta = {
             "source_path": source_path,
+            "source_mask_path": source_mask_path,
             "image_path": image_path,
             "mask_path": mask_path,
             "overlay_path": overlay_path,
