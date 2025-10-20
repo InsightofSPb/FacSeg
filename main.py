@@ -3,7 +3,7 @@ from collections import Counter
 import numpy as np
 import cv2
 from tqdm.auto import tqdm
-from typing import Optional
+from typing import Dict, Optional
 # ensure project root on sys.path
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
@@ -47,6 +47,22 @@ def parse_args():
     ap.add_argument("--test_dir",   type=str, default=DEFAULT_TEST_DIR)
     ap.add_argument("--test_coco_json", type=str, default=DEFAULT_COCO_JSON)
     ap.add_argument("--out_dir",    type=str, default=DEFAULT_OUT_DIR)
+    ap.add_argument(
+        "--tiles-train",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Path to a tiled dataset root (images/+masks/) for training."
+             " Can be provided multiple times.",
+    )
+    ap.add_argument(
+        "--tiles-val",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Optional tiled dataset roots to use for validation."
+             " When omitted the training tiles are split via --val_ratio.",
+    )
     ap.add_argument("--compile", action="store_true")
     ap.add_argument("--compile_mode", default="default")
     ap.add_argument("--compile_backend", default=None)
@@ -93,6 +109,9 @@ def parse_args():
         val = getattr(args, attr, "")
         if isinstance(val, str):
             setattr(args, attr, os.path.expanduser(val.strip()))
+
+    args.tiles_train = [os.path.expanduser(p.strip()) for p in (args.tiles_train or [])]
+    args.tiles_val = [os.path.expanduser(p.strip()) for p in (args.tiles_val or [])]
 
     args.aug_config_data = {}
     if args.aug_config:
@@ -485,42 +504,75 @@ def seg_prepare(args):
 def ovseg_train(args, device):
     out_dir = stamp_out_dir(args.out_dir)
     print(f"[i] results will be saved to: {out_dir}")
-    seg_index = SegIndex(args.images_dir, args.coco_json, class_aliases=args.class_aliases)
+    using_tiles = bool(getattr(args, "tiles_train", None))
+    if using_tiles:
+        seg_index = MaskTilesIndex(args.tiles_train, class_aliases=args.class_aliases)
+        val_index = seg_index
+        if args.tiles_val:
+            val_index = MaskTilesIndex(args.tiles_val, class_aliases=args.class_aliases)
+            tr_idx_orig = list(range(len(seg_index.items)))
+            va_idx = list(range(len(val_index.items)))
+        else:
+            tr_idx_orig, va_idx = seg_index.split_by_images(val_ratio=args.val_ratio, seed=42)
+    else:
+        seg_index = SegIndex(args.images_dir, args.coco_json, class_aliases=args.class_aliases)
+        val_index = seg_index
+        tr_idx_orig, va_idx = seg_index.split_by_images(val_ratio=args.val_ratio, seed=42)
 
     total_indexed = len(seg_index.items)
-    print(f"[i] SegIndex built: {total_indexed} images with masks across {len(seg_index.classes)} classes")
-    if os.path.isdir(args.images_dir):
-        try:
-            total_files = _count_image_files(args.images_dir)
-            print(
-                f"[i] source directory contains {total_files} image files; "
-                f"{total_indexed} matched the annotations"
-            )
-        except Exception as exc:
-            print(f"[i] warning: unable to count files in {args.images_dir}: {exc}")
-
-    buckets = Counter()
-    for rec in seg_index.items:
-        try:
-            rel = os.path.relpath(rec["path"], args.images_dir)
-        except ValueError:
-            rel = os.path.basename(rec["path"])
-        rel = rel.replace("\\", "/")
-        parts = [p for p in rel.split("/") if p]
-        bucket = parts[0] if len(parts) > 1 else "."
-        buckets[bucket] += 1
-
-    if len(buckets) > 1:
-        print("[i] per-subdirectory image counts:")
-        for name, count in sorted(buckets.items()):
-            label = name if name != "." else "(root)"
-            print(f"      {label}: {count}")
-
-    tr_idx_orig, va_idx = seg_index.split_by_images(val_ratio=args.val_ratio, seed=42)
     print(
-        f"[i] split summary: train={len(tr_idx_orig)} | val={len(va_idx)} "
-        f"(val_ratio={args.val_ratio:.2f})"
+        f"[i] dataset built: {total_indexed} images with masks across "
+        f"{len(seg_index.classes)} classes"
     )
+
+    if using_tiles:
+        per_root = getattr(seg_index, "per_root_counts", {})
+        if per_root:
+            print("[i] per-tileset image counts:")
+            for name, count in sorted(per_root.items()):
+                print(f"      {name}: {count}")
+        dropped_empty = getattr(seg_index, "dropped_empty", {})
+        for name, count in sorted(dropped_empty.items()):
+            if count > 0:
+                print(f"[i] dropped {count} empty tiles from {name} (keep_empty=False)")
+    else:
+        if os.path.isdir(args.images_dir):
+            try:
+                total_files = _count_image_files(args.images_dir)
+                print(
+                    f"[i] source directory contains {total_files} image files; "
+                    f"{total_indexed} matched the annotations"
+                )
+            except Exception as exc:
+                print(f"[i] warning: unable to count files in {args.images_dir}: {exc}")
+
+        buckets = Counter()
+        for rec in seg_index.items:
+            try:
+                rel = os.path.relpath(rec["path"], args.images_dir)
+            except ValueError:
+                rel = os.path.basename(rec["path"])
+            rel = rel.replace("\\", "/")
+            parts = [p for p in rel.split("/") if p]
+            bucket = parts[0] if len(parts) > 1 else "."
+            buckets[bucket] += 1
+
+        if len(buckets) > 1:
+            print("[i] per-subdirectory image counts:")
+            for name, count in sorted(buckets.items()):
+                label = name if name != "." else "(root)"
+                print(f"      {label}: {count}")
+
+    if val_index is seg_index:
+        print(
+            f"[i] split summary: train={len(tr_idx_orig)} | val={len(va_idx)} "
+            f"(val_ratio={args.val_ratio:.2f})"
+        )
+    else:
+        print(
+            f"[i] split summary: train tiles={len(tr_idx_orig)} | val tiles={len(va_idx)} "
+            "(external validation roots)"
+        )
     tr_idx = []
     for _ in range(max(1, args.ovseg_dup)):
         tr_idx += tr_idx_orig
@@ -538,7 +590,7 @@ def ovseg_train(args, device):
         aug_config=dataset_cfg,
     )
     ds_va = SegDataset(
-        seg_index,
+        val_index,
         va_idx,
         train=False,
         size=args.ovseg_img_size,
@@ -547,6 +599,38 @@ def ovseg_train(args, device):
     )
     dl_tr = DataLoader(ds_tr, batch_size=args.ovseg_batch_size, shuffle=True,  num_workers=2, pin_memory=True, persistent_workers=True, prefetch_factor=2)
     dl_va = DataLoader(ds_va, batch_size=args.ovseg_batch_size, shuffle=False, num_workers=2, pin_memory=True, persistent_workers=True, prefetch_factor=2)
+
+    train_meta = getattr(seg_index, "meta_by_path", {})
+    val_meta = getattr(val_index, "meta_by_path", train_meta)
+    train_root_hint = args.images_dir if not using_tiles else ""
+    val_root_hint = train_root_hint
+    if using_tiles:
+        roots = getattr(seg_index, "root_infos", {})
+        if roots:
+            first = next(iter(roots.values()))
+            train_root_hint = str(first.get("images_dir", ""))
+        val_roots = getattr(val_index, "root_infos", roots)
+        if val_roots:
+            first_val = next(iter(val_roots.values()))
+            val_root_hint = str(first_val.get("images_dir", ""))
+
+    def _resolve_rel_path(path_str: str, meta_map: Dict[str, Dict[str, str]], root_hint: str = "") -> str:
+        info = meta_map.get(path_str)
+        if info:
+            rel = info.get("relative_path")
+            dataset = info.get("dataset")
+            if rel:
+                rel = rel.replace("\\", "/")
+                if dataset and dataset not in {"", "."}:
+                    return f"{dataset}/{rel}"
+                return rel
+        if root_hint:
+            try:
+                rel = os.path.relpath(path_str, root_hint)
+                return rel.replace("\\", "/")
+            except Exception:
+                pass
+        return path_str
 
     model = OvSegModel(args.ovseg_model, args.ovseg_ckpt, seg_index.num_classes,
                        freeze_backbone=args.ovseg_freeze_backbone,
@@ -594,6 +678,7 @@ def ovseg_train(args, device):
 
     for ep in range(1, args.epochs+1):
         model.train(); losses = []; seen = 0
+
         steps_total = max(1, len(dl_tr))
         checks = max(1, int(getattr(args, "val_checks_per_epoch", 1)))
         check_points = {steps_total}
@@ -615,6 +700,7 @@ def ovseg_train(args, device):
             loss = criterion(out, m)
             opt.zero_grad(); loss.backward(); opt.step()
             losses.append(float(loss.item())); seen += x.size(0)
+
             while next_check is not None and step >= next_check:
                 val_loss, m_val, K = evaluate_segmentation_full(model, dl_va, device, criterion)
                 print(
@@ -633,10 +719,10 @@ def ovseg_train(args, device):
                 f"mIoU={m_val['miou']:.4f}  F1={m_val['f1_macro']:.4f}"
             )
             last_val = (val_loss, m_val, K)
+
         avg_loss = (sum(losses) / max(1, len(losses)))
         print(f"[ep {ep:03d}] train_loss={avg_loss:.4f}")
 
-        # validation metrics
         if last_val is None:
             val_loss, m_val, K = evaluate_segmentation_full(model, dl_va, device, criterion)
             print(
@@ -717,13 +803,7 @@ def ovseg_train(args, device):
                             acc = probs[i].detach().cpu().numpy()
 
                             raw_path = paths[i]
-                            if args.images_dir and os.path.exists(args.images_dir):
-                                try:
-                                    rel = os.path.relpath(raw_path, args.images_dir)
-                                except ValueError:
-                                    rel = raw_path
-                            else:
-                                rel = raw_path
+                            rel = _resolve_rel_path(raw_path, val_meta, val_root_hint)
                             safe_base = re.sub(r"[^0-9a-zA-Z._/-]", "_", rel)
                             safe_base = safe_base.replace(os.sep, "__").replace("/", "__")
                             safe_base = safe_base.replace("..", "__")
@@ -755,13 +835,7 @@ def ovseg_train(args, device):
 
                         for i in range(x_tr_vis.size(0)):
                             raw_path = paths_tr[i]
-                            if args.images_dir and os.path.exists(args.images_dir):
-                                try:
-                                    rel = os.path.relpath(raw_path, args.images_dir)
-                                except ValueError:
-                                    rel = raw_path
-                            else:
-                                rel = raw_path
+                            rel = _resolve_rel_path(raw_path, train_meta, train_root_hint)
                             safe_base = re.sub(r"[^0-9a-zA-Z._/-]", "_", rel)
                             safe_base = safe_base.replace(os.sep, "__").replace("/", "__")
                             safe_base = safe_base.replace("..", "__")
@@ -800,8 +874,15 @@ def ovseg_infer(args, device):
     seg_index = None
     if class_names is None:
         try:
-            seg_index = SegIndex(args.images_dir if args.images_dir else args.test_dir,
-                                 args.coco_json, class_aliases=args.class_aliases)
+            if args.tiles_train or args.tiles_val:
+                roots = args.tiles_train or args.tiles_val
+                seg_index = MaskTilesIndex(roots, class_aliases=args.class_aliases)
+            else:
+                seg_index = SegIndex(
+                    args.images_dir if args.images_dir else args.test_dir,
+                    args.coco_json,
+                    class_aliases=args.class_aliases,
+                )
             class_names = seg_index.classes
             num_classes = seg_index.num_classes
         except AssertionError as exc:
