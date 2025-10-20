@@ -1,4 +1,5 @@
 import os, json, argparse, random, sys, re
+from collections import Counter
 import numpy as np
 import cv2
 from tqdm.auto import tqdm
@@ -23,6 +24,19 @@ DEFAULT_COCO_JSON = "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/an
 DEFAULT_TEST_DIR = "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test"
 DEFAULT_OUT_DIR = "/home/sasha/Facade_segmentation/results"
 DEFAULT_PREPARED_DIR = "/home/sasha/Facade_segmentation/prepared"
+
+
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
+
+
+def _count_image_files(directory: str, extensions=_IMAGE_EXTS) -> int:
+    total = 0
+    low_exts = tuple(ext.lower() for ext in extensions)
+    for root, _, files in os.walk(directory):
+        for name in files:
+            if name.lower().endswith(low_exts):
+                total += 1
+    return total
 
 
 def parse_args():
@@ -471,7 +485,40 @@ def ovseg_train(args, device):
     print(f"[i] results will be saved to: {out_dir}")
     seg_index = SegIndex(args.images_dir, args.coco_json, class_aliases=args.class_aliases)
 
+    total_indexed = len(seg_index.items)
+    print(f"[i] SegIndex built: {total_indexed} images with masks across {len(seg_index.classes)} classes")
+    if os.path.isdir(args.images_dir):
+        try:
+            total_files = _count_image_files(args.images_dir)
+            print(
+                f"[i] source directory contains {total_files} image files; "
+                f"{total_indexed} matched the annotations"
+            )
+        except Exception as exc:
+            print(f"[i] warning: unable to count files in {args.images_dir}: {exc}")
+
+    buckets = Counter()
+    for rec in seg_index.items:
+        try:
+            rel = os.path.relpath(rec["path"], args.images_dir)
+        except ValueError:
+            rel = os.path.basename(rec["path"])
+        rel = rel.replace("\\", "/")
+        parts = [p for p in rel.split("/") if p]
+        bucket = parts[0] if len(parts) > 1 else "."
+        buckets[bucket] += 1
+
+    if len(buckets) > 1:
+        print("[i] per-subdirectory image counts:")
+        for name, count in sorted(buckets.items()):
+            label = name if name != "." else "(root)"
+            print(f"      {label}: {count}")
+
     tr_idx_orig, va_idx = seg_index.split_by_images(val_ratio=args.val_ratio, seed=42)
+    print(
+        f"[i] split summary: train={len(tr_idx_orig)} | val={len(va_idx)} "
+        f"(val_ratio={args.val_ratio:.2f})"
+    )
     tr_idx = []
     for _ in range(max(1, args.ovseg_dup)):
         tr_idx += tr_idx_orig

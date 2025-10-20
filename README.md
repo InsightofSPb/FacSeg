@@ -294,6 +294,17 @@ matches the model’s `1024×1024` training scale【F:lposs/segmentation/configs
      training.dataset.data_root=/home/sasha/Facade_segmentation/dataset_final
    ```
 
+   Before training you can double-check the merged tiles with
+   `tools/preview_tiled_dataset.py`. It samples a handful of image/mask pairs
+   from the specified roots and writes side-by-side overlays:
+
+   ```bash
+   python tools/preview_tiled_dataset.py \
+     /home/sasha/Facade_segmentation/tiles/dacl10k/train \
+     /home/sasha/Facade_segmentation/tiles/facade_damage/train \
+     --num-samples 10 --output /home/sasha/Facade_segmentation/tiles/preview
+   ```
+
 Adjust the destination folders if you prefer different aggregation points for
 train/val tiles. Repeat steps 1–3 for each split (e.g. replace `train` with
 `val`) before triggering the final training command.
