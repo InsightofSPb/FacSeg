@@ -11,3 +11,5 @@ lposs/datasets/
 lposs/data/
 *.pth
 *.csv
+*.json
+tiles/*

@@ -10,6 +10,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Deque, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
+import sys
 
 try:
     import cv2
@@ -25,6 +26,11 @@ try:
 except Exception:  # pragma: no cover - tqdm is optional
     def tqdm(iterable, **kwargs):
         return iterable
+# Ensure the repository root (parent of tools/) is importable when the script is
+# executed directly (``python tools/prepare_dataset_tiles.py``).
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from utils.utils import _norm_name
 
@@ -546,14 +552,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not args.class_mapping:
             raise ValueError("--class-mapping is required for json-polygons and xml-bboxes datasets.")
         annotations_dir = args.annotations_dir
+        if not annotations_dir.exists():
+            raise FileNotFoundError(f"Annotations directory '{annotations_dir}' does not exist")
         if args.annotation_extensions:
             annotation_exts = _normalize_exts(args.annotation_extensions)
         else:
             default_ext = [".json"] if dataset_type == "json-polygons" else [".xml"]
             annotation_exts = _normalize_exts(default_ext)
         ann_paths: List[Path] = []
-        for ext in annotation_exts:
-            ann_paths.extend(sorted(annotations_dir.rglob(f"*{ext}")))
+        normalized_exts = tuple(ext.lower() for ext in annotation_exts)
+        ann_paths = [
+            path
+            for path in sorted(annotations_dir.rglob("*"))
+            if path.is_file() and any(path.name.lower().endswith(ext) for ext in normalized_exts)
+        ]
         if not ann_paths:
             raise FileNotFoundError(
                 f"No annotation files with extensions {annotation_exts} found under {annotations_dir}"

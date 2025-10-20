@@ -16,7 +16,8 @@ import cv2
 import numpy as np
 from tqdm.auto import tqdm
 
-from utils.utils import _norm_name
+def _norm_name(s: str) -> str:
+    return s.strip().upper().replace(" ", "_")
 
 
 DATASET_TYPES = {"json-polygons", "xml-bboxes", "mask-png"}
