@@ -124,7 +124,7 @@ training:
     repeat_times: 10
   samples_per_gpu: 1
   workers_per_gpu: 2
-  max_epochs: 300
+  max_epochs: 500
   val_interval: 1
   log_interval: 1
   checkpoint_dir: ${output}/checkpoints

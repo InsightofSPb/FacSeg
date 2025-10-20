@@ -10,3 +10,4 @@ results/*
 lposs/datasets/
 lposs/data/
 *.pth
+*.csv
