@@ -20,6 +20,7 @@ match those accepted by :mod:`prepare_dataset_tiles.py`.
 from __future__ import annotations
 
 import argparse
+import json
 import random
 from collections import defaultdict
 from pathlib import Path
@@ -39,6 +40,36 @@ from utils.utils import DEFAULT_CATEGORIES, LS_PALETTE, hex_to_bgr, save_overlay
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
 MASK_EXTS = (".png", ".tif", ".tiff")
+
+
+def _load_manifest_classes(root: Path) -> Tuple[List[str], Dict[int, str]]:
+    """Return class ordering and index→name mapping for a tiles root."""
+
+    manifest_path = root / "manifest.json"
+    index_to_name: Dict[int, str] = {}
+
+    if manifest_path.exists():
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        for entry in data.get("classes", []) or []:
+            try:
+                idx = int(entry.get("index", 0))
+            except (TypeError, ValueError):
+                continue
+            if idx <= 0:
+                continue
+            name = str(entry.get("name", f"class_{idx}")).strip()
+            if not name:
+                continue
+            index_to_name[idx] = name
+
+    if not index_to_name:
+        index_to_name = {idx: name for idx, name in DEFAULT_CATEGORIES.items()}
+
+    ordered_names = [index_to_name[idx] for idx in sorted(index_to_name.keys())]
+    return ordered_names, index_to_name
 
 
 def _resolve_pairs(root: Path) -> List[Tuple[Path, Path]]:
@@ -76,9 +107,10 @@ def _resolve_pairs(root: Path) -> List[Tuple[Path, Path]]:
     return pairs
 
 
-def _mask_to_color(mask: np.ndarray, class_names: Sequence[str]) -> np.ndarray:
+def _mask_to_color(mask: np.ndarray, index_to_name: Mapping[int, str]) -> np.ndarray:
     color = np.zeros((mask.shape[0], mask.shape[1], 3), dtype=np.uint8)
-    for idx, name in enumerate(class_names, start=1):
+    for idx in sorted(index_to_name.keys()):
+        name = index_to_name[idx]
         color[mask == idx] = hex_to_bgr(LS_PALETTE.get(name, "#FF00FF"))
     return color
 
@@ -162,11 +194,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_argument_parser().parse_args(argv)
 
     rng = random.Random(args.seed)
-    class_names = [DEFAULT_CATEGORIES[idx] for idx in sorted(DEFAULT_CATEGORIES.keys())]
-
     pairs_by_root: Dict[str, List[Tuple[Path, Path]]] = {}
+    classes_by_root: Dict[str, List[str]] = {}
+    value_maps: Dict[str, Dict[int, str]] = {}
     for root in args.roots:
-        pairs_by_root[root.name] = _resolve_pairs(root)
+        base_name = root.name or root.as_posix().replace("/", "_")
+        root_name = base_name
+        suffix = 2
+        while root_name in pairs_by_root:
+            root_name = f"{base_name}_{suffix}"
+            suffix += 1
+
+        pairs_by_root[root_name] = _resolve_pairs(root)
+        class_list, index_to_name = _load_manifest_classes(root)
+        classes_by_root[root_name] = class_list
+        value_maps[root_name] = index_to_name
 
     for root_name, pairs in pairs_by_root.items():
         print(f"[preview] {root_name}: {len(pairs)} image/mask pairs found")
@@ -207,7 +249,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         cv2.imwrite(str(image_out), image)
         cv2.imwrite(str(mask_out), mask)
 
-        color_map = _mask_to_color(mask.astype(np.uint8), class_names)
+        index_to_name = value_maps.get(root_name) or {}
+        class_names = classes_by_root.get(root_name) or [
+            DEFAULT_CATEGORIES[idx] for idx in sorted(DEFAULT_CATEGORIES.keys())
+        ]
+
+        color_map = _mask_to_color(mask.astype(np.uint8), index_to_name)
         save_overlay(
             cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
             color_map,
