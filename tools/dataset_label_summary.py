@@ -297,6 +297,25 @@ def _geometry_bbox(geometry: Geometry) -> Tuple[int, int, int, int]:
     )
 
 
+def _measure_text(font: ImageFont.ImageFont, text: str) -> Tuple[int, int]:
+    """Return the width and height of the rendered text for the given font."""
+
+    # Pillow 10 removed ``getsize`` in favour of ``getlength`` / ``getbbox``.
+    getbbox = getattr(font, "getbbox", None)
+    if callable(getbbox):
+        left, top, right, bottom = getbbox(text)
+        return int(right - left), int(bottom - top)
+
+    getsize = getattr(font, "getsize", None)
+    if callable(getsize):  # pragma: no cover - older Pillow fallback
+        return getsize(text)
+
+    # Ultimate fallback: render into a mask and inspect its size.  This branch
+    # is unlikely to be hit but keeps us compatible with exotic font objects.
+    mask = font.getmask(text)
+    return mask.size
+
+
 def _draw_geometry(
     overlay: ImageDraw.ImageDraw,
     geometry: Geometry,
@@ -318,7 +337,7 @@ def _draw_geometry(
 
     xmin, ymin, xmax, ymax = _geometry_bbox(geometry)
     text_x = max(0, xmin)
-    text_w, text_h = font.getsize(label)
+    text_w, text_h = _measure_text(font, label)
     text_y = max(0, ymin - text_h - 2)
     bg_coords = [text_x, text_y, text_x + text_w + 4, text_y + text_h + 2]
     overlay.rectangle(bg_coords, fill=(*color, 180))
