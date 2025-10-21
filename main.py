@@ -231,14 +231,19 @@ def lposs_train(args):
         train_ids = sorted(ids[val_count:])
         return train_ids, val_ids
 
-    def _symlink_or_copy(src: Path, dst: Path) -> None:
+    def _copy_materialised_file(src: Path, dst: Path) -> None:
+        """Copy ``src`` to ``dst`` ensuring the destination hierarchy exists.
+
+        The LPOSS data loaders expect real files and not symbolic links, so we
+        always materialise copies of the tiles instead of attempting to
+        symlink. ``copy2`` is used to retain metadata when possible while
+        gracefully handling repeated invocations.
+        """
+
         if dst.exists():
             return
         dst.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.symlink(src, dst)
-        except OSError:
-            shutil.copy2(src, dst)
+        shutil.copy2(src, dst)
 
     def _prepare_tiles_dataset():
         train_roots = getattr(args, "tiles_train", None) or []
@@ -281,26 +286,42 @@ def lposs_train(args):
             (dataset_root / "masks" / split_name).mkdir(parents=True, exist_ok=True)
 
         def _link_records(records, dest_split: str):
+            split_name = (dest_split or "").strip()
+
             for rec in records:
                 dataset_name = (rec.get("dataset") or "tiles").strip() or "tiles"
                 rel_img = Path(rec.get("relative_path") or Path(rec["path"]).name)
-                if rel_img.is_absolute():
-                    rel_img = Path(*rel_img.parts[1:]) if len(rel_img.parts) > 1 else Path(rel_img.name)
 
-                rel_parts = rel_img.parts
-                if dataset_name and (not rel_parts or rel_parts[0] != dataset_name):
-                    rel_img = Path(dataset_name) / rel_img
+                if rel_img.is_absolute():
+                    rel_img = (
+                        Path(*rel_img.parts[1:]) if len(rel_img.parts) > 1 else Path(rel_img.name)
+                    )
+
+                parts = [p for p in rel_img.parts if p not in ("", ".")]
+
+                if split_name and parts and parts[0] == split_name:
+                    parts = parts[1:]
+
+                if dataset_name and dataset_name != split_name:
+                    if not parts or parts[0] != dataset_name:
+                        parts = [dataset_name, *parts]
+
+                if parts:
+                    rel_img = Path(*parts)
+                else:
+                    rel_img = Path(Path(rec["path"]).name)
+
                 img_src = Path(rec["path"])
                 mask_path = rec.get("mask_path")
                 if not mask_path:
                     raise RuntimeError(f"Tile '{img_src}' is missing an associated mask path")
                 mask_src = Path(mask_path)
-                img_dst = dataset_root / "images" / dest_split / rel_img
+                img_dst = dataset_root / "images" / split_name / rel_img
                 mask_suffix = mask_src.suffix or ".png"
                 mask_rel = rel_img.with_suffix(mask_suffix)
-                mask_dst = dataset_root / "masks" / dest_split / mask_rel
-                _symlink_or_copy(img_src, img_dst)
-                _symlink_or_copy(mask_src, mask_dst)
+                mask_dst = dataset_root / "masks" / split_name / mask_rel
+                _copy_materialised_file(img_src, img_dst)
+                _copy_materialised_file(mask_src, mask_dst)
 
         _link_records(train_records, "train")
         _link_records(val_records, "val")
