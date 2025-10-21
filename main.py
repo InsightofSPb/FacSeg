@@ -231,14 +231,19 @@ def lposs_train(args):
         train_ids = sorted(ids[val_count:])
         return train_ids, val_ids
 
-    def _symlink_or_copy(src: Path, dst: Path) -> None:
+    def _copy_materialised_file(src: Path, dst: Path) -> None:
+        """Copy ``src`` to ``dst`` ensuring the destination hierarchy exists.
+
+        The LPOSS data loaders expect real files and not symbolic links, so we
+        always materialise copies of the tiles instead of attempting to
+        symlink. ``copy2`` is used to retain metadata when possible while
+        gracefully handling repeated invocations.
+        """
+
         if dst.exists():
             return
         dst.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.symlink(src, dst)
-        except OSError:
-            shutil.copy2(src, dst)
+        shutil.copy2(src, dst)
 
     def _prepare_tiles_dataset():
         train_roots = getattr(args, "tiles_train", None) or []
@@ -315,8 +320,8 @@ def lposs_train(args):
                 mask_suffix = mask_src.suffix or ".png"
                 mask_rel = rel_img.with_suffix(mask_suffix)
                 mask_dst = dataset_root / "masks" / split_name / mask_rel
-                _symlink_or_copy(img_src, img_dst)
-                _symlink_or_copy(mask_src, mask_dst)
+                _copy_materialised_file(img_src, img_dst)
+                _copy_materialised_file(mask_src, mask_dst)
 
         _link_records(train_records, "train")
         _link_records(val_records, "val")
