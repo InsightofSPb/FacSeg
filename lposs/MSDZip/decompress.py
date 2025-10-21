@@ -91,8 +91,16 @@ def decompress(args, temp_file, info, last, device: torch.device):
 
     if args.weights:
         logging.info('Loading pretrained weights from %s', args.weights)
-        state = torch.load(args.weights, map_location=device)
-        model.load_state_dict(state)
+        state, source_key, stripped = load_checkpoint_state(args.weights, device)
+        if source_key != 'root':
+            logging.info("Extracted state_dict from checkpoint key '%s'", source_key)
+        if stripped:
+            logging.info("Removed 'module.' prefix from checkpoint parameters")
+        try:
+            model.load_state_dict(state)
+        except RuntimeError:
+            logging.exception('Failed to load weights from %s', args.weights)
+            raise
     elif args.load:
         logging.info('Loading Model!')
         model.load_state_dict(torch.load(args.prefix + '_model/{}.{}.pth'.format(args.prefix, int(args.index)-1), map_location=device, weights_only=True))

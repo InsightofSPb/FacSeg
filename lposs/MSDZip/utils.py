@@ -1,6 +1,72 @@
 import numpy as np
 import struct
+from collections import OrderedDict
+from typing import Tuple
+
+import torch
 import torch.nn.functional as F
+
+
+def _is_tensor_state_dict(state) -> bool:
+    """Return ``True`` if *state* looks like a torch state_dict."""
+    if not isinstance(state, (dict, OrderedDict)):
+        return False
+    if not state:
+        return False
+    return all(isinstance(value, torch.Tensor) for value in state.values())
+
+
+def _strip_module_prefix(state_dict):
+    """Remove a leading ``module.`` prefix introduced by ``DataParallel``."""
+    prefix = "module."
+    keys = list(state_dict.keys())
+    if keys and all(key.startswith(prefix) for key in keys):
+        return OrderedDict((key[len(prefix):], value) for key, value in state_dict.items()), True
+    return state_dict, False
+
+
+def load_checkpoint_state(path: str, device) -> Tuple[OrderedDict, str, bool]:
+    """Load a checkpoint and return a clean ``state_dict``.
+
+    The helper understands both bare ``state_dict`` files and the wrapped
+    payloads produced by :func:`torch.save` in the LPOSS training pipeline,
+    where the actual weights live under a ``state_dict`` key.  It also strips
+    the ``module.`` prefix that appears when checkpoints are saved from a
+    ``DataParallel`` model.
+
+    Returns
+    -------
+    state_dict:
+        The extracted state dictionary, ready to be passed to
+        :meth:`torch.nn.Module.load_state_dict`.
+    source_key:
+        ``"root"`` when the file already contained a bare ``state_dict`` or
+        the dictionary key that held the state otherwise.
+    stripped_module_prefix:
+        ``True`` if a leading ``module.`` prefix was removed from all keys.
+    """
+
+    payload = torch.load(path, map_location=device)
+    state_dict = None
+    source_key = "root"
+
+    if _is_tensor_state_dict(payload):
+        state_dict = payload
+    elif isinstance(payload, (dict, OrderedDict)):
+        for candidate in ("state_dict", "model_state", "model_state_dict", "model"):
+            maybe_state = payload.get(candidate)
+            if _is_tensor_state_dict(maybe_state):
+                state_dict = maybe_state
+                source_key = candidate
+                break
+
+    if state_dict is None:
+        raise ValueError(
+            f"Checkpoint '{path}' does not contain a recognisable state_dict."
+        )
+
+    state_dict, stripped = _strip_module_prefix(state_dict)
+    return state_dict, source_key, stripped
 
 def loss_function(pred, target):
     loss = 1/np.log(2) * F.nll_loss(pred, target)

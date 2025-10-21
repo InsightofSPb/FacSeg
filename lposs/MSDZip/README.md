@@ -45,6 +45,56 @@ The script will emit basic statistics, optionally save a heatmap or binary
 mask (using the PGM format so no external dependencies are required), and
 report the coordinates of the locations with the highest bitrate.
 
+### Using LPOSS-trained checkpoints
+
+Models trained via `python main.py --mode lposs_train ...` save their weights
+under a `state_dict` key inside the checkpoint payload.  The compressor and
+decompressor automatically unwrap that format (and strip the optional
+`module.` prefix that appears when using `DataParallel`), so you can point the
+`--weights` flag directly at either a fine-tuned or a stock LPOSS checkpoint.
+
+Below is an example that contrasts a fine-tuned model against the original
+weights.  Adjust the two environment variables so they point at the actual
+`.pt` files on disk (for instance, the fine-tuned checkpoints typically live
+in `lposs/outputs/<experiment>/checkpoints/...`).
+
+```bash
+cd lposs/MSDZip
+
+# Tell the scripts where the checkpoints live
+export LPOSS_FINETUNED="lposs/outputs/my_run/checkpoints/best_val_miou/ovseg_ep012_loss_1.2345.pt"
+export LPOSS_STOCK="checkpoints/ovseg_stock.pt"
+
+# Fine-tuned LPOSS model
+python compress.py data.bin finetuned_adapt.mz --prefix sample \
+    --mode adaptive --weights "$LPOSS_FINETUNED" \
+    --metrics-path finetuned_adapt_metrics.npz --metrics-topk 25
+python decompress.py finetuned_adapt.mz finetuned_adapt.out --prefix sample \
+    --mode adaptive --weights "$LPOSS_FINETUNED"
+
+python compress.py data.bin finetuned_static.mz --prefix sample \
+    --mode static --weights "$LPOSS_FINETUNED" \
+    --metrics-path finetuned_static_metrics.npz --metrics-topk 25
+python decompress.py finetuned_static.mz finetuned_static.out --prefix sample \
+    --mode static --weights "$LPOSS_FINETUNED"
+
+# Stock LPOSS model
+python compress.py data.bin stock_adapt.mz --prefix sample \
+    --mode adaptive --weights "$LPOSS_STOCK" \
+    --metrics-path stock_adapt_metrics.npz --metrics-topk 25
+python decompress.py stock_adapt.mz stock_adapt.out --prefix sample \
+    --mode adaptive --weights "$LPOSS_STOCK"
+
+python compress.py data.bin stock_static.mz --prefix sample \
+    --mode static --weights "$LPOSS_STOCK" \
+    --metrics-path stock_static_metrics.npz --metrics-topk 25
+python decompress.py stock_static.mz stock_static.out --prefix sample \
+    --mode static --weights "$LPOSS_STOCK"
+```
+
+The resulting `.npz` traces can be fed into `analyze_metrics.py` to visualise
+where each checkpoint struggles to compress the input.
+
 ## Stepwise-parallel
 ```
 # Compression
