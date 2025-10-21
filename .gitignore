@@ -1,6 +1,6 @@
 datasets/*
 *.png
-results/*
+*results/*
 
 /datasets/*
 !/datasets/*.py

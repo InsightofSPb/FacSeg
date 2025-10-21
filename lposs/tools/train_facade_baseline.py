@@ -84,7 +84,7 @@ def _build_datasets(
     train_shuffle: bool = True,
 ):
 
-    _ensure_custom_modules(("lposs.segmentation.datasets.facade_damage",))
+    _ensure_custom_modules(("segmentation.datasets.facade_damage",))
     _import_module_from_path(
         "mmseg.datasets.pipelines.facade_augment",
         PROJECT_ROOT / "mmseg" / "datasets" / "pipelines" / "facade_augment.py",
