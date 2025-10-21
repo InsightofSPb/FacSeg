@@ -1,10 +1,11 @@
 """Quantitative evaluation utilities for facade damage models."""
 
 from __future__ import annotations
+import os
 import sys
 import argparse
 import json
-import sys
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING
@@ -46,6 +47,8 @@ try:
     from omegaconf import OmegaConf
 except ImportError:  # pragma: no cover - hydra dependency provides it at runtime
     OmegaConf = None  # type: ignore
+
+from tqdm.auto import tqdm
 
 from lposs.helpers.logger import get_logger
 from lposs.metrics.facade_metrics import FacadeMetricLogger
@@ -132,6 +135,15 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Optional cap on the number of samples processed per split (useful for smoke-tests).",
+    )
+    parser.add_argument(
+        "--dataset-root",
+        type=str,
+        default=None,
+        help=(
+            "Override the dataset root directory used for the Hydra configuration. "
+            "Equivalent to setting the FACADE_DATA_ROOT environment variable."
+        ),
     )
     return parser.parse_args()
 
@@ -247,19 +259,37 @@ def _evaluate_split(
     device: "torch.device",
     class_names: Sequence[str],
     max_samples: Optional[int] = None,
+    *,
+    progress=None,
 ):
     metric_logger = FacadeMetricLogger(class_names)
     processed = 0
+    amp_enabled = device.type.startswith("cuda") and torch.cuda.is_available()
+    if amp_enabled and hasattr(torch.cuda, "amp"):
+        autocast_ctx = torch.cuda.amp.autocast
+    else:
+        autocast_ctx = nullcontext
     with torch.no_grad():
         for batch in loader:
             img = _tensor_from_batch(batch, "img", device)
-            logits = model.clip_backbone(img)
+            with autocast_ctx():
+                logits = model.clip_backbone(img)
+            logits = logits.float()
             logits = _ensure_logits_shape(logits, img.shape[-2:])
             if "gt_semantic_seg" not in batch:
                 continue
             target = _tensor_from_batch(batch, "gt_semantic_seg", device).squeeze(1).long()
             metric_logger.update(logits, target)
-            processed += img.shape[0]
+            batch_size = img.shape[0]
+            if progress is not None:
+                if max_samples is not None:
+                    remaining = max(max_samples - processed, 0)
+                    increment = min(batch_size, remaining)
+                else:
+                    increment = batch_size
+                if increment > 0:
+                    progress.update(increment)
+            processed += batch_size
             if max_samples is not None and processed >= max_samples:
                 break
     return metric_logger
@@ -335,6 +365,43 @@ def main() -> None:
     logger = get_logger(cfg)
     logger.info("Evaluating models on device %s", device)
 
+    if args.dataset_root:
+        dataset_root = Path(args.dataset_root).expanduser().resolve()
+        if not dataset_root.is_dir():
+            raise FileNotFoundError(f"Dataset root not found: {dataset_root}")
+
+        def _assign_dataset_root(target):
+            if target is None:
+                return False
+            if hasattr(target, "dataset"):
+                dataset_cfg = target.dataset
+            elif isinstance(target, dict):
+                dataset_cfg = target.get("dataset")
+            else:
+                dataset_cfg = None
+            if dataset_cfg is None:
+                return False
+            if hasattr(dataset_cfg, "data_root"):
+                dataset_cfg.data_root = str(dataset_root)
+                return True
+            if isinstance(dataset_cfg, dict):
+                dataset_cfg["data_root"] = str(dataset_root)
+                return True
+            return False
+
+        assigned = False
+        training_cfg = getattr(cfg, "training", None)
+        if training_cfg is None and isinstance(cfg, dict):
+            training_cfg = cfg.get("training")
+        if training_cfg is not None:
+            assigned = _assign_dataset_root(training_cfg)
+        if not assigned:
+            raise AttributeError(
+                "Unable to override dataset root: configuration is missing training.dataset section."
+            )
+        os.environ["FACADE_DATA_ROOT"] = str(dataset_root)
+        logger.info("Overriding dataset root to %s", dataset_root)
+
     train_loader, val_loader, mmseg_cfg = _build_datasets(
         cfg,
         include_repeats=False,
@@ -343,6 +410,26 @@ def main() -> None:
     class_names, _ = _extract_dataset_metadata(train_loader.dataset)
 
     loaders = {"train": train_loader, "val": val_loader}
+
+    dataset_sizes = {
+        "train": len(train_loader.dataset),
+        "val": len(val_loader.dataset),
+    }
+    for split, size in dataset_sizes.items():
+        if size == 0:
+            data_cfg = getattr(mmseg_cfg.data, split, None)
+            img_dir = None
+            if data_cfg is not None:
+                data_root = getattr(data_cfg, "data_root", None)
+                img_subdir = getattr(data_cfg, "img_dir", None)
+                if data_root and img_subdir:
+                    img_dir = Path(data_root) / img_subdir
+            message = f"No samples found for '{split}' split."
+            if img_dir is not None:
+                message += f" Expected images under {img_dir}."
+            if split in args.splits:
+                raise RuntimeError(message)
+            logger.warning(message)
 
     summary: Dict[str, Dict[str, float]] = {}
 
@@ -372,13 +459,29 @@ def main() -> None:
             logger.info(
                 "[%s] Evaluating %s split with %d samples", model_spec.label, split, len(loader.dataset)
             )
-            metric_logger = _evaluate_split(
-                loader,
-                model,
-                device,
-                class_names,
-                max_samples=args.max_samples,
-            )
+            total_samples = len(loader.dataset)
+            if args.max_samples is not None:
+                total_samples = min(total_samples, args.max_samples)
+            progress_bar = None
+            if total_samples > 0:
+                progress_bar = tqdm(
+                    total=total_samples,
+                    desc=f"[{model_spec.label}] {split}",
+                    unit="sample",
+                    dynamic_ncols=True,
+                )
+            try:
+                metric_logger = _evaluate_split(
+                    loader,
+                    model,
+                    device,
+                    class_names,
+                    max_samples=args.max_samples,
+                    progress=progress_bar,
+                )
+            finally:
+                if progress_bar is not None:
+                    progress_bar.close()
             metrics = _summarise_results(
                 model_spec,
                 split,
