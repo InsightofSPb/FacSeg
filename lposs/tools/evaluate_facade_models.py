@@ -31,15 +31,20 @@ except ImportError:  # pragma: no cover - optional dependency
     torch = None  # type: ignore
 from hydra import compose, initialize_config_dir
 
-from helpers.logger import get_logger
-from metrics.facade_metrics import FacadeMetricLogger
-from models import build_model
-from tools.train_facade_baseline import (
+try:
+    from omegaconf import OmegaConf
+except ImportError:  # pragma: no cover - hydra dependency provides it at runtime
+    OmegaConf = None  # type: ignore
+
+from lposs.helpers.logger import get_logger
+from lposs.metrics.facade_metrics import FacadeMetricLogger
+from lposs.models import build_model
+from lposs.tools.train_facade_baseline import (
     CONFIG_DIR as TRAIN_CONFIG_DIR,
     _build_datasets,
     _tensor_from_batch,
 )
-from tools.infer_facade import (
+from lposs.tools.infer_facade import (
     _ensure_logits_shape,
     _extract_dataset_metadata,
     _get_device,
@@ -300,9 +305,19 @@ def main() -> None:
         raise RuntimeError("PyTorch is required for evaluation. Install it following the repository instructions.")
     config_dir = Path(args.config_dir).resolve()
     cfg = _load_config(args.config_name, config_dir)
+    if OmegaConf is not None and OmegaConf.is_config(cfg):
+        OmegaConf.set_struct(cfg, False)
     models = _resolve_models(args)
 
     output_dir = Path(args.output_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        cfg.output = str(output_dir)
+    except AttributeError:
+        if isinstance(cfg, dict):
+            cfg["output"] = str(output_dir)
+        else:
+            raise
     split_dirs = _build_output_dirs(output_dir, args.splits)
 
     device = _get_device(args.device)
