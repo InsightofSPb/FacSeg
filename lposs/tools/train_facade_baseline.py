@@ -84,6 +84,13 @@ def _build_datasets(
     train_shuffle: bool = True,
 ):
 
+    # NOTE: The MMCV registry treats modules imported under different package
+    # names as distinct, so importing our datasets both as
+    # ``lposs.segmentation.datasets`` (direct project path) and
+    # ``segmentation.datasets`` (namespace used by the MMCV configs) would
+    # register the same dataset classes twice and raise ``KeyError``.  We ensure
+    # everything is loaded through the namespace that the configs rely on so the
+    # registry only sees one copy of each dataset.
     _ensure_custom_modules(("segmentation.datasets.facade_damage",))
     _import_module_from_path(
         "mmseg.datasets.pipelines.facade_augment",
