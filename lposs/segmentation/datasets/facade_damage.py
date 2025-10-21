@@ -42,6 +42,11 @@ class FacadeDamageDataset(CustomDataset):
     def __init__(self, **kwargs):
         img_suffix = kwargs.pop('img_suffix', ('.png', '.jpg', '.jpeg'))
         seg_map_suffix = kwargs.pop('seg_map_suffix', ('.png', '.jpg', '.jpeg'))
+        recursive = kwargs.pop('recursive', True)
+
+        # ``CustomDataset`` initialiser calls ``load_annotations`` immediately, so make
+        # sure ``self.recursive`` is defined before invoking ``super().__init__``.
+        self.recursive = bool(recursive)
 
         super().__init__(
             img_suffix=img_suffix,
