@@ -252,6 +252,7 @@ def _run_split(
 
     if metric_logger is not None:
         metrics = metric_logger.compute()
+        per_class_iou = metric_logger.per_class_iou()
         confusion = metric_logger.confusion_matrix().cpu().numpy()
         label_names = class_names
         if label_names is None:
@@ -262,8 +263,8 @@ def _run_split(
                 split_name.capitalize(),
                 _format_confusion_matrix(confusion, label_names),
             )
-        return metrics, confusion
-    return None, None
+        return metrics, confusion, per_class_iou
+    return None, None, None
 
 
 def main() -> None:
@@ -324,7 +325,7 @@ def main() -> None:
     )
 
     train_limit = None if step == 1 else math.ceil(train_samples / step)
-    train_metrics, _ = _run_split(
+    train_metrics, _, train_per_class = _run_split(
         "train",
         train_loader,
         model,
@@ -343,11 +344,14 @@ def main() -> None:
 
     if train_metrics:
         logger.info("Train metrics: %s", train_metrics)
+    if train_per_class:
+        rounded_train = {k: round(v, 4) for k, v in train_per_class.items()}
+        logger.info("Train per-class IoU: %s", rounded_train)
 
     val_step = max(1, args.val_interval)
     logger.info("Processing validation set with step=%d", val_step)
 
-    val_metrics, _ = _run_split(
+    val_metrics, _, val_per_class = _run_split(
         "val",
         val_loader,
         model,
@@ -366,6 +370,9 @@ def main() -> None:
 
     if val_metrics:
         logger.info("Validation metrics: %s", val_metrics)
+    if val_per_class:
+        rounded_val = {k: round(v, 4) for k, v in val_per_class.items()}
+        logger.info("Validation per-class IoU: %s", rounded_val)
 
 
 if __name__ == "__main__":

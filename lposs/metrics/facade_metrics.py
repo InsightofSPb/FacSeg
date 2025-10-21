@@ -248,7 +248,9 @@ class FacadeMetricLogger:
             self._device = resolved_device
 
     def compute(self) -> Dict[str, float]:
-        miou = (self.intersection / self.union.clamp(min=1)).mean().item()
+        unions = self.union.clamp(min=1)
+        ious = self.intersection / unions
+        miou = ious.mean().item()
         boundary = (self.boundary_inter / self.boundary_union.clamp(min=1)).mean().item()
         precision = torch.where(
             self.pred_area > 0,
@@ -275,7 +277,17 @@ class FacadeMetricLogger:
             "f1": macro_f1,
             "damageIoU": 0.0,
             "damagePlusIoU": 0.0,
+            "damageMIoU": 0.0,
+            "damagePlusMIoU": 0.0,
         }
+        if self.damage_indices:
+            damage_values = ious[list(self.damage_indices)]
+            if damage_values.numel() > 0:
+                metrics["damageMIoU"] = damage_values.mean().item()
+        if self.damage_plus_indices:
+            damage_plus_values = ious[list(self.damage_plus_indices)]
+            if damage_plus_values.numel() > 0:
+                metrics["damagePlusMIoU"] = damage_plus_values.mean().item()
         if self.damage_indices and self.damage_union:
             metrics["damageIoU"] = self.damage_intersection / max(self.damage_union, 1.0)
         if self.damage_plus_indices and self.damage_plus_union:
