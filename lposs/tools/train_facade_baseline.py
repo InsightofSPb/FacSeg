@@ -1,5 +1,6 @@
 """Baseline fine-tuning loop for facade damage segmentation."""
 
+import copy
 import importlib
 import importlib.util
 import math
@@ -85,6 +86,17 @@ def _build_datasets(
         PROJECT_ROOT / "mmseg" / "datasets" / "pipelines" / "facade_augment.py",
     )
     dataset_cfg = cfg.training.dataset
+
+    def _as_bool(value, *, default: Optional[bool] = None) -> Optional[bool]:
+        if value is None:
+            return default
+        if isinstance(value, str):
+            return value.lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    tile_mode = bool(_as_bool(dataset_cfg.get("tile_mode"), default=False))
+    recursive_override = dataset_cfg.get("recursive", None)
+
     dataset_config_path = _resolve_config_path(dataset_cfg.config)
     dataset_cfg.config = str(dataset_config_path)
     mmseg_cfg = Config.fromfile(str(dataset_config_path))
@@ -100,6 +112,69 @@ def _build_datasets(
     if dataset_cfg.get('classes'):
         mmseg_cfg.data.train.classes = dataset_cfg.classes
         mmseg_cfg.data.val.classes = dataset_cfg.classes
+
+    if tile_mode:
+        default_norm = dict(mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
+        norm_cfg = mmseg_cfg.get("img_norm_cfg", None) or default_norm
+        norm_cfg = copy.deepcopy(norm_cfg)
+        default_meta_keys = [
+            "ori_shape",
+            "img_shape",
+            "pad_shape",
+            "scale_factor",
+            "flip",
+            "flip_direction",
+        ]
+        meta_keys = mmseg_cfg.get("meta_keys", None) or default_meta_keys
+        meta_keys = list(meta_keys)
+
+        def _make_pipeline(include_annotations: bool):
+            steps = [dict(type="LoadImageFromFile")]
+            if include_annotations:
+                steps.append(dict(type="LoadAnnotations"))
+            steps.append(dict(type="Normalize", **copy.deepcopy(norm_cfg)))
+            steps.append(dict(type="ImageToTensor", keys=["img"]))
+            if include_annotations:
+                steps.append(dict(type="ToTensor", keys=["gt_semantic_seg"]))
+                steps.append(
+                    dict(
+                        type="Collect",
+                        keys=["img", "gt_semantic_seg"],
+                        meta_keys=list(meta_keys),
+                    )
+                )
+            else:
+                steps.append(
+                    dict(
+                        type="Collect",
+                        keys=["img"],
+                        meta_keys=list(meta_keys),
+                    )
+                )
+            return steps
+
+        mmseg_cfg.data.train.pipeline = _make_pipeline(include_annotations=True)
+        mmseg_cfg.data.val.pipeline = _make_pipeline(include_annotations=True)
+        if hasattr(mmseg_cfg.data, "test"):
+            mmseg_cfg.data.test.pipeline = _make_pipeline(include_annotations=False)
+
+    recursive_flag = recursive_override
+    if recursive_flag is None and tile_mode:
+        recursive_flag = True
+
+    if recursive_flag is not None:
+        recursive_value = bool(_as_bool(recursive_flag, default=True))
+
+        def _apply_recursive(cfg_node):
+            if cfg_node is None:
+                return
+            if isinstance(cfg_node, dict):
+                cfg_node["recursive"] = recursive_value
+
+        _apply_recursive(mmseg_cfg.data.train)
+        _apply_recursive(mmseg_cfg.data.val)
+        if hasattr(mmseg_cfg.data, "test"):
+            _apply_recursive(mmseg_cfg.data.test)
     train_cfg = mmseg_cfg.data.train
     repeat_times = dataset_cfg.get('repeat_times', 1)
     if include_repeats and repeat_times > 1:

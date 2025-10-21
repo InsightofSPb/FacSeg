@@ -364,6 +364,10 @@ def lposs_train(args):
         dataset_value = json.dumps(str(dataset_root))
         if not _has_override(overrides, "training.dataset.data_root"):
             overrides.append(f"training.dataset.data_root={dataset_value}")
+        if not _has_override(overrides, "training.dataset.recursive"):
+            overrides.append("training.dataset.recursive=true")
+        if not _has_override(overrides, "training.dataset.tile_mode"):
+            overrides.append("training.dataset.tile_mode=true")
         os.environ["FACADE_DATA_ROOT"] = str(dataset_root)
         dataset_summary.append(f"[i] materialised LPOSS dataset: {dataset_root}")
         dataset_summary.append(f"    train tiles: {train_tiles}")
