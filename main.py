@@ -1,4 +1,4 @@
-import os, json, argparse, random, sys, re, math
+import os, json, argparse, random, sys, re, math, shutil
 from collections import Counter
 import numpy as np
 import cv2
@@ -187,6 +187,101 @@ def lposs_train(args):
     config_dir_value = getattr(args, "config_dir", "") or ""
     overrides = list(getattr(args, "hydra_overrides", []))
 
+    def _has_override(overrides_list, key: str) -> bool:
+        for entry in overrides_list:
+            text = str(entry)
+            if "=" not in text:
+                continue
+            lhs = text.split("=", 1)[0].lstrip("+-~")
+            if lhs == key:
+                return True
+        return False
+
+    def _split_train_val(index, ratio: float, seed: int):
+        total = len(index.items)
+        if total <= 1:
+            return list(range(total)), []
+        ratio = max(0.0, min(1.0, float(ratio)))
+        ids = list(range(total))
+        random.Random(seed).shuffle(ids)
+        if ratio <= 0.0:
+            return sorted(ids), []
+        val_count = int(round(total * ratio))
+        val_count = max(1, min(total - 1, val_count))
+        val_ids = sorted(ids[:val_count])
+        train_ids = sorted(ids[val_count:])
+        return train_ids, val_ids
+
+    def _symlink_or_copy(src: Path, dst: Path) -> None:
+        if dst.exists():
+            return
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.symlink(src, dst)
+        except OSError:
+            shutil.copy2(src, dst)
+
+    def _prepare_tiles_dataset():
+        train_roots = getattr(args, "tiles_train", None) or []
+        val_roots = getattr(args, "tiles_val", None) or []
+        if not train_roots and not val_roots:
+            return None
+
+        if not train_roots:
+            raise ValueError("--tiles-train must be supplied when using lposs_train with tiles")
+
+        seg_index = MaskTilesIndex(train_roots, class_aliases=args.class_aliases)
+
+        seed = getattr(args, "prep_seed", 42)
+        use_external_val = bool(val_roots)
+        if use_external_val:
+            val_index = MaskTilesIndex(val_roots, class_aliases=args.class_aliases)
+            if list(val_index.classes) != list(seg_index.classes):
+                raise ValueError(
+                    "Validation tiles must contain the same set of classes as training tiles"
+                )
+            train_records = list(seg_index.items)
+            val_records = list(val_index.items)
+        else:
+            train_ids, val_ids = _split_train_val(seg_index, args.val_ratio, seed)
+            train_records = [seg_index.items[i] for i in train_ids]
+            val_records = [seg_index.items[i] for i in val_ids]
+
+        if not train_records:
+            raise RuntimeError("No training tiles found for LPOSS training")
+
+        base_dir = Path(args.out_dir or DEFAULT_OUT_DIR)
+        if not base_dir.is_absolute():
+            base_dir = (repo_root / base_dir).resolve()
+        dataset_root = base_dir / "_lposs_tiles_dataset"
+        if dataset_root.exists():
+            shutil.rmtree(dataset_root)
+
+        for split_name in ("train", "val"):
+            (dataset_root / "images" / split_name).mkdir(parents=True, exist_ok=True)
+            (dataset_root / "masks" / split_name).mkdir(parents=True, exist_ok=True)
+
+        def _link_records(records, dest_split: str):
+            for rec in records:
+                dataset_name = rec.get("dataset") or "tiles"
+                rel_img = Path(rec.get("relative_path") or Path(rec["path"]).name)
+                img_src = Path(rec["path"])
+                mask_path = rec.get("mask_path")
+                if not mask_path:
+                    raise RuntimeError(f"Tile '{img_src}' is missing an associated mask path")
+                mask_src = Path(mask_path)
+                img_dst = dataset_root / "images" / dest_split / dataset_name / rel_img
+                mask_suffix = mask_src.suffix or ".png"
+                mask_rel = rel_img.with_suffix(mask_suffix)
+                mask_dst = dataset_root / "masks" / dest_split / dataset_name / mask_rel
+                _symlink_or_copy(img_src, img_dst)
+                _symlink_or_copy(mask_src, mask_dst)
+
+        _link_records(train_records, "train")
+        _link_records(val_records, "val")
+
+        return dataset_root, len(train_records), len(val_records)
+
     config_dir: Optional[Path] = None
     config_name: Optional[str] = None
 
@@ -243,7 +338,41 @@ def lposs_train(args):
         if not any(str(ov).split("=", 1)[0] == "training.max_epochs" for ov in overrides if "=" in ov):
             overrides.append(f"training.max_epochs={int(args.epochs)}")
 
+    dataset_summary = []
+    dataset_result = _prepare_tiles_dataset()
+    if dataset_result is not None:
+        dataset_root, train_tiles, val_tiles = dataset_result
+        dataset_value = json.dumps(str(dataset_root))
+        if not _has_override(overrides, "training.dataset.data_root"):
+            overrides.append(f"training.dataset.data_root={dataset_value}")
+        os.environ["FACADE_DATA_ROOT"] = str(dataset_root)
+        dataset_summary.append(f"[i] materialised LPOSS dataset: {dataset_root}")
+        dataset_summary.append(f"    train tiles: {train_tiles}")
+        if val_tiles:
+            dataset_summary.append(f"    val tiles: {val_tiles}")
+        else:
+            dataset_summary.append("    val tiles: 0 (skipped)")
+
+    override_batch_size = any(
+        arg == "--ovseg_batch_size" or arg.startswith("--ovseg_batch_size=")
+        for arg in sys.argv[1:]
+    )
+    if override_batch_size:
+        batch_value = max(1, int(args.ovseg_batch_size))
+        if not _has_override(overrides, "training.samples_per_gpu"):
+            overrides.append(f"training.samples_per_gpu={batch_value}")
+        if not _has_override(overrides, "training.val_samples_per_gpu"):
+            overrides.append(f"training.val_samples_per_gpu={batch_value}")
+
+    override_dup = any(arg == "--ovseg_dup" or arg.startswith("--ovseg_dup=") for arg in sys.argv[1:])
+    if override_dup:
+        dup_value = max(1, int(args.ovseg_dup))
+        if not _has_override(overrides, "training.dataset.repeat_times"):
+            overrides.append(f"training.dataset.repeat_times={dup_value}")
+
     print(f"[i] LPOSS config: {config_path}")
+    for line in dataset_summary:
+        print(line)
     if overrides:
         print("[i] Hydra overrides:")
         for item in overrides:

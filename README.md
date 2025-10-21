@@ -300,7 +300,14 @@ matches the model’s `1024×1024` training scale【F:lposs/segmentation/configs
    additional trailing arguments such as `training.max_epochs=200` or
    `evaluate.task=[]` are forwarded to Hydra as overrides. The familiar
    `--epochs` and `--out_dir` options continue to work and map to
-   `training.max_epochs` and `output` respectively for convenience.
+   `training.max_epochs` and `output` respectively for convenience. When tile
+   folders are supplied via `--tiles-train` (and optionally `--tiles-val` or
+   `--val_ratio`), the CLI materialises them into a temporary dataset under
+   `<out_dir>/_lposs_tiles_dataset` and automatically overrides
+   `training.dataset.data_root`. Batch size and duplication hints from
+   `--ovseg_batch_size` / `--ovseg_dup` are also forwarded to the Hydra config
+   when explicitly provided, so existing OVSeg commands continue to work after
+   switching `--mode` to `lposs_train`.
 
    Before training you can double-check the merged tiles with
    `tools/preview_tiled_dataset.py`. It samples a handful of image/mask pairs
