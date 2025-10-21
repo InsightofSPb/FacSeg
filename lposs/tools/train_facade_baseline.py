@@ -113,7 +113,9 @@ def _build_datasets(
         shuffle=train_shuffle,
         dist=dist,
     )
-    val_samples_per_gpu = getattr(cfg.training, "val_samples_per_gpu", 1)
+    val_samples_per_gpu = getattr(
+        cfg.training, "val_samples_per_gpu", cfg.training.samples_per_gpu
+    )
     val_workers_per_gpu = getattr(cfg.training, "val_workers_per_gpu", cfg.training.workers_per_gpu)
     val_loader = build_dataloader(
         val_dataset,
@@ -265,6 +267,151 @@ def _tensor_from_batch(batch, key: str, device: torch.device) -> torch.Tensor:
     return tensor.to(device)
 
 
+def _run_lposs_sanity_check(
+    cfg,
+    logger,
+    device: torch.device,
+    sample_limit: int,
+) -> None:
+    """Execute a quick training/validation cycle to verify the pipeline."""
+
+    try:
+        limit = int(sample_limit)
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(2, limit)
+    logger.info("Running LPOSS sanity check (limit ≈ %d samples).", limit)
+
+    sanity_train_loader, sanity_val_loader, _ = _build_datasets(
+        cfg,
+        include_repeats=False,
+        train_shuffle=False,
+    )
+
+    class_names = list(getattr(sanity_train_loader.dataset, "CLASSES", []))
+    if not class_names and hasattr(sanity_val_loader.dataset, "CLASSES"):
+        class_names = list(sanity_val_loader.dataset.CLASSES)
+
+    model = build_model(cfg.model, class_names=class_names)
+    model.to(device)
+    optimiser, _ = model.configure_optimiser(total_epochs=1)
+    scaler = GradScaler(enabled=torch.cuda.is_available())
+    train_metric_logger = FacadeMetricLogger(class_names)
+    val_metric_logger = FacadeMetricLogger(class_names)
+
+    train_target = max(1, limit // 2)
+    val_target = max(1, limit - train_target)
+    train_processed = 0
+    val_processed = 0
+    train_batches = 0
+    val_batches = 0
+    train_loss = 0.0
+    val_loss = 0.0
+
+    model.train()
+    model.update_backbone_trainable(1, logger)
+    for data in sanity_train_loader:
+        img = _tensor_from_batch(data, "img", device)
+        target = _tensor_from_batch(data, "gt_semantic_seg", device).squeeze(1).long()
+        optimiser.zero_grad()
+        with autocast(enabled=torch.cuda.is_available()):
+            outputs = model.training_step(img, target)
+            loss = outputs["loss"]
+        scaler.scale(loss).backward()
+        scaler.step(optimiser)
+        scaler.update()
+        logits = outputs.get("logits")
+        if logits is not None:
+            train_metric_logger.update(logits.detach(), target)
+        batch_size = int(img.shape[0])
+        train_processed += batch_size
+        train_batches += 1
+        train_loss += float(loss.item())
+        if train_processed >= train_target:
+            break
+
+    if train_processed == 0:
+        logger.warning("Sanity check: no training samples were processed.")
+
+    train_metrics = train_metric_logger.compute()
+    if train_batches > 0:
+        train_metrics["loss"] = train_loss / train_batches
+    else:
+        train_metrics["loss"] = float("nan")
+
+    model.eval()
+    with torch.no_grad():
+        for data in sanity_val_loader:
+            img = _tensor_from_batch(data, "img", device)
+            target = _tensor_from_batch(data, "gt_semantic_seg", device).squeeze(1).long()
+            outputs = model.training_step(img, target)
+            loss = outputs.get("loss")
+            if loss is not None:
+                val_loss += float(loss.item())
+                val_batches += 1
+            logits = outputs.get("logits")
+            if logits is not None:
+                val_metric_logger.update(logits.detach(), target)
+            batch_size = int(img.shape[0])
+            val_processed += batch_size
+            if val_processed >= val_target:
+                break
+
+    if val_processed == 0:
+        logger.warning("Sanity check: no validation samples were processed.")
+
+    val_metrics = val_metric_logger.compute()
+    if val_batches > 0:
+        val_metrics["loss"] = val_loss / val_batches
+    else:
+        val_metrics["loss"] = float("nan")
+
+    def _round_metrics(metrics: Dict[str, float]) -> Dict[str, float]:
+        rounded: Dict[str, float] = {}
+        for key, value in metrics.items():
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(numeric):
+                rounded[key] = round(numeric, 4)
+        return rounded
+
+    train_summary = _round_metrics(train_metrics)
+    val_summary = _round_metrics(val_metrics)
+
+    sanity_dir = Path(cfg.training.checkpoint_dir) / "sanity_check"
+    sanity_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_path = sanity_dir / "sanity_checkpoint.pth"
+    save_checkpoint(
+        model,
+        optimiser,
+        epoch=0,
+        path=ckpt_path,
+        metadata={
+            "stage": "sanity_check",
+            "train_samples": train_processed,
+            "val_samples": val_processed,
+            "train_metrics": train_summary,
+            "val_metrics": val_summary,
+        },
+    )
+
+    logger.info(
+        "Sanity check metrics (train=%d, val=%d): train=%s, val=%s",
+        train_processed,
+        val_processed,
+        train_summary,
+        val_summary,
+    )
+    logger.info("Sanity check checkpoint saved to %s", ckpt_path)
+
+    del model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    del sanity_train_loader
+    del sanity_val_loader
+
 def validate(
     model,
     data_loader,
@@ -295,11 +442,26 @@ def validate(
     return metrics
 
 
-def train(cfg) -> None:
+def train(cfg, *, sanity_check: bool = True, sanity_sample_limit: int = 20) -> None:
     os.makedirs(cfg.output, exist_ok=True)
     logger = get_logger(cfg)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     set_random_seed(cfg.seed)
+
+    if sanity_check:
+        try:
+            _run_lposs_sanity_check(
+                cfg,
+                logger,
+                device,
+                sanity_sample_limit,
+            )
+        except Exception:  # pragma: no cover - sanity check must surface errors
+            logger.exception("LPOSS sanity check failed")
+            raise
+        set_random_seed(cfg.seed)
+    else:
+        logger.info("Sanity check disabled; proceeding directly to training.")
 
     train_loader, val_loader, _ = _build_datasets(cfg)
     repeat_times = 1
