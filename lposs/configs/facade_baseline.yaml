@@ -123,6 +123,7 @@ training:
     classes: null
     repeat_times: 10
   samples_per_gpu: 1
+  val_samples_per_gpu: 1
   workers_per_gpu: 2
   max_epochs: 500
   val_interval: 1

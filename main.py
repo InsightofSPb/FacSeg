@@ -121,6 +121,25 @@ def parse_args():
         default="",
         help="Optional directory with Hydra configs (defaults to lposs/configs).",
     )
+    ap.add_argument(
+        "--lposs_sanity_limit",
+        type=int,
+        default=20,
+        help="Approximate total number of samples to process during the LPOSS sanity check.",
+    )
+    ap.add_argument(
+        "--lposs_sanity_check",
+        dest="lposs_sanity_check",
+        action="store_true",
+        help="Enable the automatic LPOSS sanity check before training (default).",
+    )
+    ap.add_argument(
+        "--no_lposs_sanity_check",
+        dest="lposs_sanity_check",
+        action="store_false",
+        help="Disable the automatic LPOSS sanity check before training.",
+    )
+    ap.set_defaults(lposs_sanity_check=True)
 
     args, hydra_overrides = ap.parse_known_args()
     args.hydra_overrides = hydra_overrides
@@ -378,10 +397,29 @@ def lposs_train(args):
         for item in overrides:
             print(f"    - {item}")
 
+    sanity_flag = getattr(args, "lposs_sanity_check", True)
+    sanity_limit_raw = getattr(args, "lposs_sanity_limit", 20)
+    try:
+        sanity_limit_value = int(sanity_limit_raw)
+    except (TypeError, ValueError):
+        sanity_limit_value = 20
+    if sanity_limit_value < 1:
+        sanity_limit_value = 1
+    if sanity_flag:
+        print(
+            f"[i] LPOSS sanity check: enabled (limit ≈ {max(2, sanity_limit_value)} samples)"
+        )
+    else:
+        print("[i] LPOSS sanity check: disabled via flag")
+
     with initialize_config_dir(config_dir=str(config_dir), version_base=None):
         cfg = compose(config_name=config_name, overrides=overrides)
 
-    lposs_train_impl(cfg)
+    lposs_train_impl(
+        cfg,
+        sanity_check=sanity_flag,
+        sanity_sample_limit=max(1, sanity_limit_value),
+    )
 
 
 
