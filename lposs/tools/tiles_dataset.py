@@ -1,7 +1,8 @@
 """Utilities for materialising tiled facade datasets for LPOSS."""
 
 from __future__ import annotations
-
+import importlib
+import importlib.util
 import json
 import random
 import shutil
@@ -10,7 +11,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
-
+from types import ModuleType
 
 # When this helper is imported from standalone scripts (``python lposs/tools/...``)
 # Python initialises ``sys.path`` with the helper's directory (``.../lposs/tools``)
@@ -23,7 +24,75 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from datasets.datasets import MaskTilesIndex
+def _load_mask_tiles_index() -> type:
+    """Return the project's :class:`MaskTilesIndex` implementation.
+
+    Some environments provide third-party ``datasets`` packages (for example
+    HuggingFace's library).  When this helper is imported from a standalone
+    script (``python lposs/tools/...``) such packages may appear on ``sys.path``
+    ahead of the repository root, causing ``import datasets.datasets`` to load
+    the external dependency instead of the in-repo helper.  We first attempt a
+    normal import, verifying that the expected attribute exists.  If that fails
+    we load the module directly from its source file and register it in
+    ``sys.modules`` so future imports resolve consistently.
+    """
+
+    module_name = "datasets.datasets"
+
+    try:
+        module = importlib.import_module(module_name)
+        mask_index = getattr(module, "MaskTilesIndex", None)
+        if mask_index is not None:
+            return mask_index
+    except ModuleNotFoundError:
+        pass
+
+    datasets_root = _REPO_ROOT / "datasets"
+    datasets_module_path = datasets_root / "datasets.py"
+    if not datasets_module_path.exists():
+        raise ModuleNotFoundError(
+            "Could not locate the project's datasets module at "
+            f"{datasets_module_path}"  # pragma: no cover - defensive guard
+        )
+
+    package_name = "datasets"
+    package_init = datasets_root / "__init__.py"
+    package_module: Optional[ModuleType] = sys.modules.get(package_name)
+    if package_module is None:
+        package_spec = importlib.util.spec_from_file_location(
+            package_name, package_init
+        )
+        if package_spec is None or package_spec.loader is None:
+            raise ModuleNotFoundError(
+                "Unable to load the project's datasets package; "
+                "spec creation failed"
+            )
+        package_module = importlib.util.module_from_spec(package_spec)
+        package_module.__path__ = [str(datasets_root)]
+        sys.modules[package_name] = package_module
+        package_spec.loader.exec_module(package_module)
+
+    module_spec = importlib.util.spec_from_file_location(
+        module_name, datasets_module_path
+    )
+    if module_spec is None or module_spec.loader is None:
+        raise ModuleNotFoundError(
+            "Unable to load the project's datasets.datasets module; "
+            "spec creation failed"
+        )
+    module = importlib.util.module_from_spec(module_spec)
+    sys.modules[module_name] = module
+    module_spec.loader.exec_module(module)
+
+    mask_index = getattr(module, "MaskTilesIndex", None)
+    if mask_index is None:
+        raise AttributeError(
+            "The project's datasets.datasets module does not define MaskTilesIndex"
+        )
+    return mask_index
+
+
+MaskTilesIndex = _load_mask_tiles_index()
 
 
 @dataclass
