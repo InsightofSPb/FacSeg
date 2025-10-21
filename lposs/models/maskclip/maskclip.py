@@ -84,8 +84,8 @@ class MaskClip(nn.Module):
         y = y.view(B, N, 3, C // 3).permute(2, 0, 1, 3).reshape(3 * B, N, C // 3)
         y = F.linear(y, block.attn.out_proj.weight, block.attn.out_proj.bias)
         q, k, v = y.tensor_split(3, dim=0)
-        v += x
-        v += block.mlp(block.ln_2(v))
+        v = v + x
+        v = v + block.mlp(block.ln_2(v))
         return v
 
 
