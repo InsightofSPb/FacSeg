@@ -17,6 +17,84 @@ python compress.py enwik6 enwik6.mz --prefix enwik6
 python decompress.py enwik6.mz enwik6.mz.out --prefix enwik6
 ```
 
+### Advanced options
+
+The compressor and decompressor now expose several flags that make it easier
+to run controlled experiments and analyse the output quality:
+
+* `--mode adaptive|static` toggles between the original adaptive training
+  behaviour (`adaptive`, default) and a frozen evaluation-only mode (`static`).
+  Make sure that the encoder and decoder use the same value.
+* `--weights <path>` loads a checkpoint containing model weights before
+  compression/decompression starts. This can be used to compare the baseline
+  MSDZip model, a fine-tuned variant trained with `lposs_train`, or any other
+  checkpoint.
+* `--device` lets you force a particular PyTorch device (for example `cpu`).
+* `--metrics-path <path>` stores a per-symbol bitrate trace (NumPy `.npz`)
+  which can be inspected with `analyze_metrics.py`. Combine this with
+  `--metrics-topk` to log the worst-performing indices directly to stdout.
+
+Use the helper script below to visualise the metric trace and highlight the
+regions that are hard to compress:
+
+```
+python analyze_metrics.py --metrics <trace.npz> --resolution 512x512 \
+    --heatmap heatmap.pgm --mask hot-spots.pgm --threshold 5.0 --topk 20
+```
+The script will emit basic statistics, optionally save a heatmap or binary
+mask (using the PGM format so no external dependencies are required), and
+report the coordinates of the locations with the highest bitrate.
+
+### Using LPOSS-trained checkpoints
+
+Models trained via `python main.py --mode lposs_train ...` save their weights
+under a `state_dict` key inside the checkpoint payload.  The compressor and
+decompressor automatically unwrap that format (and strip the optional
+`module.` prefix that appears when using `DataParallel`), so you can point the
+`--weights` flag directly at either a fine-tuned or a stock LPOSS checkpoint.
+
+Below is an example that contrasts a fine-tuned model against the original
+weights.  Adjust the two environment variables so they point at the actual
+`.pt` files on disk (for instance, the fine-tuned checkpoints typically live
+in `lposs/outputs/<experiment>/checkpoints/...`).
+
+```bash
+cd lposs/MSDZip
+
+# Tell the scripts where the checkpoints live
+export LPOSS_FINETUNED="lposs/outputs/my_run/checkpoints/best_val_miou/ovseg_ep012_loss_1.2345.pt"
+export LPOSS_STOCK="checkpoints/ovseg_stock.pt"
+
+# Fine-tuned LPOSS model
+python compress.py data.bin finetuned_adapt.mz --prefix sample \
+    --mode adaptive --weights "$LPOSS_FINETUNED" \
+    --metrics-path finetuned_adapt_metrics.npz --metrics-topk 25
+python decompress.py finetuned_adapt.mz finetuned_adapt.out --prefix sample \
+    --mode adaptive --weights "$LPOSS_FINETUNED"
+
+python compress.py data.bin finetuned_static.mz --prefix sample \
+    --mode static --weights "$LPOSS_FINETUNED" \
+    --metrics-path finetuned_static_metrics.npz --metrics-topk 25
+python decompress.py finetuned_static.mz finetuned_static.out --prefix sample \
+    --mode static --weights "$LPOSS_FINETUNED"
+
+# Stock LPOSS model
+python compress.py data.bin stock_adapt.mz --prefix sample \
+    --mode adaptive --weights "$LPOSS_STOCK" \
+    --metrics-path stock_adapt_metrics.npz --metrics-topk 25
+python decompress.py stock_adapt.mz stock_adapt.out --prefix sample \
+    --mode adaptive --weights "$LPOSS_STOCK"
+
+python compress.py data.bin stock_static.mz --prefix sample \
+    --mode static --weights "$LPOSS_STOCK" \
+    --metrics-path stock_static_metrics.npz --metrics-topk 25
+python decompress.py stock_static.mz stock_static.out --prefix sample \
+    --mode static --weights "$LPOSS_STOCK"
+```
+
+The resulting `.npz` traces can be fed into `analyze_metrics.py` to visualise
+where each checkpoint struggles to compress the input.
+
 ## Stepwise-parallel
 ```
 # Compression

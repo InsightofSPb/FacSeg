@@ -5,7 +5,9 @@ import time
 import logging
 import argparse
 import torch
+import torch.nn.functional as F
 import os
+import numpy as np
 import compress_model
 import arithmeticcoding_fast
 from utils import *
@@ -19,6 +21,7 @@ def parseArgs(argv):
     parser.add_argument('input', type=str, help='Source file.')
     parser.add_argument('output', type=str, help='Compressed file.')
     parser.add_argument('--gpu', type=str, default='0', help='GPU to use.')
+    parser.add_argument('--device', type=str, help='Torch device to use (overrides --gpu).')
     parser.add_argument('--tempdir', '-T', type=str, help='Temporary folder name.')
     parser.add_argument('--tempfile', type=str, help='TemFile Folder .')
     parser.add_argument('--prefix', '-p', type=str, help='Prefixes of files')
@@ -37,10 +40,28 @@ def parseArgs(argv):
     parser.add_argument('--save', action='store_true', help='Save the model')
     parser.add_argument('--load', action='store_true', help='Load the model')
     parser.add_argument('--ratio', type=float, default=0.05, help='Pretrain ratio.')
+    parser.add_argument('--weights', type=str, help='Optional path to pretrained model weights (.pth).')
+    parser.add_argument('--mode', choices=['adaptive', 'static'], default='adaptive',
+                        help='Compression mode used during encoding. Must match the encoder configuration.')
     args = parser.parse_args(argv)
     return args
 
-def decompress(args, temp_file, info, last):
+
+def resolve_device(args: argparse.Namespace) -> torch.device:
+    if args.device:
+        device = torch.device(args.device)
+        if device.type == 'cuda':
+            os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+        return device
+    if args.gpu.lower() == 'cpu':
+        return torch.device('cpu')
+    if torch.cuda.is_available():
+        os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+        return torch.device('cuda')
+    logging.warning('CUDA was requested but is not available. Falling back to CPU.')
+    return torch.device('cpu')
+
+def decompress(args, temp_file, info, last, device: torch.device):
     bs, ts = args.batchsize, args.timesteps
     len_series, vocab_size = info[args.sub_prefix], args.vocab_size
 
@@ -64,19 +85,38 @@ def decompress(args, temp_file, info, last):
             series_2d[i, j] = dec[i].read(cumul, vocab_size)
 
     cumul_batch = np.zeros((bs, vocab_size + 1), dtype=np.uint64)
-    model = compress_model.MixedModel(batchsize=args.batchsize, layers=args.layers, hidden_dim=args.hidden_dim, ffn_dim=args.ffn_dim, vocab_size=vocab_size, vocab_dim=args.vocab_dim, timesteps=ts).cuda()   #没有用到vocab_dim
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    model = compress_model.MixedModel(batchsize=args.batchsize, layers=args.layers, hidden_dim=args.hidden_dim,
+                                      ffn_dim=args.ffn_dim, vocab_size=vocab_size, vocab_dim=args.vocab_dim,
+                                      timesteps=ts).to(device)   #没有用到vocab_dim
+
+    if args.weights:
+        logging.info('Loading pretrained weights from %s', args.weights)
+        state, source_key, stripped = load_checkpoint_state(args.weights, device)
+        if source_key != 'root':
+            logging.info("Extracted state_dict from checkpoint key '%s'", source_key)
+        if stripped:
+            logging.info("Removed 'module.' prefix from checkpoint parameters")
+        try:
+            model.load_state_dict(state)
+        except RuntimeError:
+            logging.exception('Failed to load weights from %s', args.weights)
+            raise
+    elif args.load:
+        logging.info('Loading Model!')
+        model.load_state_dict(torch.load(args.prefix + '_model/{}.{}.pth'.format(args.prefix, int(args.index)-1), map_location=device, weights_only=True))
+
+    adaptive = args.mode == 'adaptive'
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd) if adaptive else None
 
     if iter_num - ts > 0:
-        if args.load:
-            logging.info('Loading Model!')
-            model.load_state_dict(torch.load(args.prefix + '_model/{}.{}.pth'.format(args.prefix, int(args.index)-1), weights_only=True))
         for train_index in range(iter_num - ts):
-            model.train()
-            train_batch = torch.LongTensor(series_2d[:, train_index:train_index + ts]).cuda()
-            logits = model.forward(train_batch)
-            # print(train_batch, train_batch.shape)
-            # np.save('decomp.npy', train_batch.cpu())
+            context = torch.from_numpy(series_2d[:, train_index:train_index + ts]).to(device).long()
+            with torch.set_grad_enabled(adaptive):
+                if adaptive:
+                    model.train()
+                else:
+                    model.eval()
+                logits = model.forward(context)
             prob = logits[:, -1, :]
             prob = F.softmax(prob, dim=1).detach().cpu().numpy()
             cumul_batch[:, 1:] = np.cumsum(prob * 10000000 + 1, axis=1)
@@ -85,14 +125,14 @@ def decompress(args, temp_file, info, last):
             for i in range(bs):
                 series_2d[i, train_index + ts] = dec[i].read(cumul_batch[i, :], vocab_size)
 
-            logits = logits.transpose(1, 2)
-            label = torch.from_numpy(series_2d[:, train_index + 1:train_index + ts + 1]).cuda()
-            train_loss = F.cross_entropy(logits[:, :, -1], label[:, -1].long())
-            train_loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
+            if adaptive:
+                target = torch.from_numpy(series_2d[:, train_index + ts]).to(device).long()
+                loss = torch.nn.functional.cross_entropy(logits[:, -1, :], target)
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
 
-            if train_index == int((iter_num - ts) * args.ratio) and args.save:
+            if adaptive and train_index == int((iter_num - ts) * args.ratio) and args.save:
                 logging.info('Saving Model!')
                 torch.save(model.state_dict(), args.prefix + '_model/{}.{}.pth'.format(args.prefix, args.index))
 
@@ -132,9 +172,11 @@ def main(args):
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     os.environ['PYTHONHASHSEED'] = str(args.seed)
-    os.environ["CUDA_VISIBLE_DEVICES"]=args.gpu
-    torch.cuda.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
+    device = resolve_device(args)
+    if device.type == 'cuda':
+        torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+    logging.info('Using device %s', device)
 
     if args.layers is None:
         args.layers = int(math.log2(args.timesteps) + 1)
@@ -176,10 +218,10 @@ def main(args):
     f.close()
 
     if (params[args.sub_prefix] - args.timesteps) % args.batchsize == 0:
-        decompress(args, temp_file, params, 0)
+        decompress(args, temp_file, params, 0, device)
     else:
         last_length = (params[args.sub_prefix] - args.timesteps) % args.batchsize + args.timesteps
-        decompress(args, temp_file, params, last_length)
+        decompress(args, temp_file, params, last_length, device)
     # remove temp files
     shutil.rmtree(args.tempdir)
     t2 = time.time()
