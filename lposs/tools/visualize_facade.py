@@ -9,7 +9,7 @@ from hydra import compose, initialize
 from mmcv import Config
 from mmseg.datasets import build_dataset
 
-from models import build_model
+from lposs.models import build_model
 
 
 def overlay(image, mask, alpha=0.5):

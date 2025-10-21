@@ -4,12 +4,21 @@ from __future__ import annotations
 import sys
 import argparse
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING
+
+
+# NOTE: When this script is executed directly (``python lposs/tools/...py``) the
+# working directory inserted into ``sys.path`` is ``.../lposs/tools``. That path
+# does not contain the ``lposs`` package itself, so we explicitly add the
+# repository root to the module search path to keep ``import lposs`` statements
+# working even without ``pip install -e``.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+
 if TYPE_CHECKING:  # pragma: no cover - typing aid
     import numpy as np
 

@@ -20,13 +20,17 @@ from mmseg.datasets import build_dataloader, build_dataset
 from torch.cuda.amp import GradScaler, autocast
 from tqdm.auto import tqdm
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = PROJECT_ROOT.parent
 CONFIG_DIR = PROJECT_ROOT / "configs"
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
-from helpers.logger import get_logger
-from metrics.facade_metrics import FacadeMetricLogger
-from models import build_model
+for path in (REPO_ROOT, PROJECT_ROOT):
+    path_str = str(path)
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
+
+from lposs.helpers.logger import get_logger
+from lposs.metrics.facade_metrics import FacadeMetricLogger
+from lposs.models import build_model
 
 def _import_module_from_path(qualified_name: str, path: Path) -> None:
     """Import a module from a specific file path under the given name."""
@@ -80,7 +84,7 @@ def _build_datasets(
     train_shuffle: bool = True,
 ):
 
-    _ensure_custom_modules(("segmentation.datasets.facade_damage",))
+    _ensure_custom_modules(("lposs.segmentation.datasets.facade_damage",))
     _import_module_from_path(
         "mmseg.datasets.pipelines.facade_augment",
         PROJECT_ROOT / "mmseg" / "datasets" / "pipelines" / "facade_augment.py",
