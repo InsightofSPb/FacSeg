@@ -14,7 +14,7 @@ from mmseg.ops import resize
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from torch import Tensor
 from open_clip import get_tokenizer,  create_model_from_pretrained
-from models.builder import MODELS
+from lposs.models.builder import MODELS
 import torchvision.transforms as T
 from .utils.prompt_templates import imagenet_templates
 

@@ -15,14 +15,20 @@ import torch
 import torch.nn.functional as F
 from hydra import compose, initialize_config_dir
 from PIL import Image
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = PROJECT_ROOT.parent
 CONFIG_DIR = PROJECT_ROOT / "configs"
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-from helpers.logger import get_logger
-from metrics.facade_metrics import FacadeMetricLogger
-from models import build_model
-from tools.train_facade_baseline import (
+
+for path in (REPO_ROOT, PROJECT_ROOT):
+    path_str = str(path)
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
+
+from lposs.helpers.logger import get_logger
+from lposs.metrics.facade_metrics import FacadeMetricLogger
+from lposs.models import build_model
+from lposs.tools.train_facade_baseline import (
     CONFIG_DIR,
     _build_datasets,
     _tensor_from_batch,

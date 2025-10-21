@@ -5,6 +5,16 @@
 # ---------------------------------------------------------------------------------------------------
 
 import argparse
+import sys
+from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parent
+_REPO_ROOT = _PROJECT_ROOT.parent
+for path in (_REPO_ROOT, _PROJECT_ROOT):
+    path_str = str(path)
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
+
 import datasets.transforms
 
 import numpy as np
@@ -17,9 +27,9 @@ from mmcv.parallel import MMDistributedDataParallel
 from mmcv.runner import get_dist_info, init_dist, set_random_seed
 from mmseg.apis import multi_gpu_test
 
-from helpers.logger import get_logger
-from models import build_model
-from segmentation.evaluation import build_seg_dataloader, build_seg_dataset, build_seg_inference
+from lposs.helpers.logger import get_logger
+from lposs.models import build_model
+from lposs.segmentation.evaluation import build_seg_dataloader, build_seg_dataset, build_seg_inference
 #import wandb
 
 

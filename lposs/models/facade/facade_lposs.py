@@ -12,9 +12,9 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.optim.lr_scheduler import LambdaLR
 
-from models.builder import MODELS
-from models.lposs.lposs import LPOSS
-from models.utils import inject_lora_adapters
+from lposs.models.builder import MODELS
+from lposs.models.lposs.lposs import LPOSS
+from lposs.models.utils import inject_lora_adapters
 
 
 @dataclass
