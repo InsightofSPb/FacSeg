@@ -60,6 +60,24 @@ LPOSS+:
 torchrun main_eval.py lposs_plus.yaml --dataset {voc, coco_object, context, context59, coco_stuff, voc20, ade20k, cityscapes} [--measure_boundary]
 ```
 
+### Facade damage utilities
+
+The `tools` sub-package contains scripts that streamline quantitative evaluation and interpretability studies for the St. Petersburg facade dataset:
+
+* `python -m lposs.tools.evaluate_facade_models --output-dir ./outputs/facade_eval --finetuned-checkpoint <path/to/finetuned.ckpt>` evaluates both the stock and fine-tuned models on the selected splits, storing:
+  * full metric dumps (including per-class IoU, macro F1, aggregated damage IoU, and the new `damageDetectionRecall`, `damageDetectionPrecision`, `damageDetectionF1`, and `damageMislabelRate` that treat any correctly detected damage—regardless of the subtype—as a partial hit),
+  * raw and normalised confusion matrices in CSV and PNG form,
+  * a consolidated `summary.json` for quick comparisons.
+
+  Pass `--skip-stock` to omit the base model, `--stock-checkpoint` to load an explicit checkpoint for the pre-finetuned weights, and `--splits train val` to evaluate multiple splits in one run.
+
+* `python -m lposs.tools.analyse_facade_representations --output-dir ./outputs/facade_analysis --finetuned-checkpoint <path/to/finetuned.ckpt> --indices 0 12 27` compares internal representations between model variants using Grad-CAM and Integrated Gradients. For each sampled tile it saves:
+  * per-model segmentation overlays,
+  * per-class attribution heatmaps for the requested methods (defaulting to damage classes),
+  * an `analysis_summary.json` capturing prompt configuration, class probabilities, and average attribution intensities.
+
+  Custom text prompts can be explored either inline (`--prompt SPALLING="spalling у колонны"`) or via named JSON/YAML prompt sets supplied through `--prompt-set custom=path/to/prompts.json`. The script re-instantiates each model for every prompt set so that stock and fine-tuned variants can be compared side by side under identical textual conditions.
+
 ## Citation
 
 ```
