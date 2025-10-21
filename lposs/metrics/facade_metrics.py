@@ -120,6 +120,10 @@ class FacadeMetricLogger:
         self.damage_union = 0.0
         self.damage_plus_intersection = 0.0
         self.damage_plus_union = 0.0
+        self.damage_hits = 0.0
+        self.damage_gt_total = 0.0
+        self.damage_pred_total = 0.0
+        self.damage_mislabel = 0.0
 
     def update(self, logits: torch.Tensor, target: torch.Tensor) -> None:
         self._ensure_state_device(logits.device, logits.dtype)
@@ -176,6 +180,13 @@ class FacadeMetricLogger:
             self.damage_union += (
                 torch.logical_or(damage_pred, damage_gt).sum().item()
             )
+            hits = torch.logical_and(damage_pred, damage_gt)
+            self.damage_hits += hits.sum().item()
+            self.damage_gt_total += damage_gt.sum().item()
+            self.damage_pred_total += damage_pred.sum().item()
+            self.damage_mislabel += torch.logical_and(
+                hits, pred_valid != gt_valid
+            ).sum().item()
 
         if self.damage_plus_indices:
             damage_plus_pred = self._mask_for_indices(
@@ -279,11 +290,31 @@ class FacadeMetricLogger:
             "damagePlusIoU": 0.0,
             "damageMIoU": 0.0,
             "damagePlusMIoU": 0.0,
+            "damageDetectionRecall": 0.0,
+            "damageDetectionPrecision": 0.0,
+            "damageDetectionF1": 0.0,
+            "damageMislabelRate": 0.0,
         }
         if self.damage_indices:
             damage_values = ious[list(self.damage_indices)]
             if damage_values.numel() > 0:
                 metrics["damageMIoU"] = damage_values.mean().item()
+            if self.damage_gt_total:
+                metrics["damageDetectionRecall"] = self.damage_hits / max(
+                    self.damage_gt_total, 1.0
+                )
+                metrics["damageMislabelRate"] = self.damage_mislabel / max(
+                    self.damage_gt_total, 1.0
+                )
+            if self.damage_pred_total:
+                metrics["damageDetectionPrecision"] = self.damage_hits / max(
+                    self.damage_pred_total, 1.0
+                )
+            precision = metrics["damageDetectionPrecision"]
+            recall = metrics["damageDetectionRecall"]
+            denom = precision + recall
+            if denom > 0:
+                metrics["damageDetectionF1"] = (2 * precision * recall) / denom
         if self.damage_plus_indices:
             damage_plus_values = ious[list(self.damage_plus_indices)]
             if damage_plus_values.numel() > 0:
