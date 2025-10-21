@@ -225,25 +225,38 @@ def _default_class_order(num_classes):
     return base[:num_classes]
 
 
-def evaluate_segmentation_full(model, dl, device, criterion):
+def evaluate_segmentation_full(model, dl, device, criterion, desc: Optional[str] = None, leave: bool = False):
     model.eval()
     losses = []
     hist = None
     K = None
+    iterator = dl
+    pbar = None
+    if desc is not None:
+        pbar = tqdm(dl, desc=desc, leave=leave)
+        iterator = pbar
     with torch.no_grad():
-        for x, y, _ in dl:
+        loss_sum = 0.0
+        for x, y, _ in iterator:
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True).long()
             out = model(x)["out"]
             if out.shape[-2:] != y.shape[-2:]:
                 out = F.interpolate(out, size=y.shape[-2:], mode="bilinear", align_corners=False)
             loss = criterion(out, y)
-            losses.append(float(loss.item()))
+            current_loss = float(loss.item())
+            losses.append(current_loss)
+            loss_sum += current_loss
+            if pbar is not None:
+                avg_loss = loss_sum / len(losses)
+                pbar.set_postfix({"loss": current_loss, "loss_avg": avg_loss})
             pred = out.argmax(1)
             if K is None:
                 K = out.shape[1]
             h = seg_hist_np(pred.cpu().numpy(), y.cpu().numpy(), K)
             hist = h if hist is None else (hist + h)
+    if pbar is not None:
+        pbar.close()
     avg_loss = float(np.mean(losses)) if losses else float("inf")
     metrics = seg_metrics_from_hist(hist, ignore_background=True) if hist is not None else {
         "pixel_acc": 0.0,
@@ -677,7 +690,8 @@ def ovseg_train(args, device):
     vis_epochs = [ep for ep in vis_epochs if 1 <= ep <= args.epochs]
 
     for ep in range(1, args.epochs+1):
-        model.train(); losses = []; seen = 0
+        model.train(); losses = []
+        loss_sum = 0.0
 
         steps_total = max(1, len(dl_tr))
         checks = max(1, int(getattr(args, "val_checks_per_epoch", 1)))
@@ -690,19 +704,28 @@ def ovseg_train(args, device):
         next_check = next(next_checks, None)
         last_val = None
 
-        for step, (x, m, _) in enumerate(
-            tqdm(dl_tr, desc=f"OVSeg Train {ep}/{args.epochs}", leave=False), start=1
-        ):
+        train_pbar = tqdm(dl_tr, desc=f"OVSeg Train {ep}/{args.epochs}", leave=False)
+        for step, (x, m, _) in enumerate(train_pbar, start=1):
             x = x.to(device); m = m.to(device).long()
             out = model(x)["out"]
             if out.shape[-2:] != m.shape[-2:]:
                 out = F.interpolate(out, size=m.shape[-2:], mode="bilinear", align_corners=False)
             loss = criterion(out, m)
             opt.zero_grad(); loss.backward(); opt.step()
-            losses.append(float(loss.item())); seen += x.size(0)
+            current_loss = float(loss.item())
+            losses.append(current_loss)
+            loss_sum += current_loss
+            train_pbar.set_postfix({"loss": current_loss, "loss_avg": loss_sum / len(losses)})
 
             while next_check is not None and step >= next_check:
-                val_loss, m_val, K = evaluate_segmentation_full(model, dl_va, device, criterion)
+                val_loss, m_val, K = evaluate_segmentation_full(
+                    model,
+                    dl_va,
+                    device,
+                    criterion,
+                    desc=f"OVSeg Val {ep}/{args.epochs} @{step}/{steps_total}",
+                    leave=False,
+                )
                 print(
                     f"[ep {ep:03d}] val@{step}/{steps_total}: "
                     f"loss={val_loss:.4f}  pixel_acc={m_val['pixel_acc']:.4f}  "
@@ -710,9 +733,17 @@ def ovseg_train(args, device):
                 )
                 last_val = (val_loss, m_val, K)
                 next_check = next(next_checks, None)
+        train_pbar.close()
 
         if len(dl_tr) == 0:
-            val_loss, m_val, K = evaluate_segmentation_full(model, dl_va, device, criterion)
+            val_loss, m_val, K = evaluate_segmentation_full(
+                model,
+                dl_va,
+                device,
+                criterion,
+                desc=f"OVSeg Val {ep}/{args.epochs} @0/{steps_total}",
+                leave=False,
+            )
             print(
                 f"[ep {ep:03d}] val@0/{steps_total}: "
                 f"loss={val_loss:.4f}  pixel_acc={m_val['pixel_acc']:.4f}  "
@@ -724,7 +755,14 @@ def ovseg_train(args, device):
         print(f"[ep {ep:03d}] train_loss={avg_loss:.4f}")
 
         if last_val is None:
-            val_loss, m_val, K = evaluate_segmentation_full(model, dl_va, device, criterion)
+            val_loss, m_val, K = evaluate_segmentation_full(
+                model,
+                dl_va,
+                device,
+                criterion,
+                desc=f"OVSeg Val {ep}/{args.epochs} @{steps_total}/{steps_total}",
+                leave=False,
+            )
             print(
                 f"[ep {ep:03d}] val@{steps_total}/{steps_total}: "
                 f"loss={val_loss:.4f}  pixel_acc={m_val['pixel_acc']:.4f}  "
