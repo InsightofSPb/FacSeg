@@ -1,7 +1,8 @@
+import logging
 import numpy as np
 import struct
 from collections import OrderedDict
-from typing import Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -25,7 +26,7 @@ def _strip_module_prefix(state_dict):
     return state_dict, False
 
 
-def load_checkpoint_state(path: str, device) -> Tuple[OrderedDict, str, bool]:
+def load_checkpoint_state(path: str, device) -> Tuple[OrderedDict, str, bool, Optional[dict]]:
     """Load a checkpoint and return a clean ``state_dict``.
 
     The helper understands both bare ``state_dict`` files and the wrapped
@@ -49,10 +50,12 @@ def load_checkpoint_state(path: str, device) -> Tuple[OrderedDict, str, bool]:
     payload = torch.load(path, map_location=device)
     state_dict = None
     source_key = "root"
+    metadata = None
 
     if _is_tensor_state_dict(payload):
         state_dict = payload
     elif isinstance(payload, (dict, OrderedDict)):
+        metadata = payload.get("metadata")
         for candidate in ("state_dict", "model_state", "model_state_dict", "model"):
             maybe_state = payload.get(candidate)
             if _is_tensor_state_dict(maybe_state):
@@ -66,7 +69,7 @@ def load_checkpoint_state(path: str, device) -> Tuple[OrderedDict, str, bool]:
         )
 
     state_dict, stripped = _strip_module_prefix(state_dict)
-    return state_dict, source_key, stripped
+    return state_dict, source_key, stripped, metadata
 
 def loss_function(pred, target):
     loss = 1/np.log(2) * F.nll_loss(pred, target)
@@ -130,3 +133,87 @@ def var_int_decode(f):
         shift <<= 7
         byte_str_len += shift
     return byte_str_len
+
+
+def infer_msdzip_model_config(state_dict: OrderedDict) -> Dict[str, int]:
+    """Infer ``MixedModel`` hyper-parameters from a checkpoint state dict."""
+
+    config: Dict[str, int] = {}
+
+    embedding = state_dict.get("embedding.weight")
+    if embedding is not None:
+        config["vocab_size"] = int(embedding.shape[0])
+        config["vocab_dim"] = int(embedding.shape[1])
+
+    linear = state_dict.get("lin.weight")
+    if linear is not None:
+        config.setdefault("vocab_size", int(linear.shape[0]))
+        config["hidden_dim"] = int(linear.shape[1])
+
+    w1 = state_dict.get("W1")
+    if w1 is not None:
+        config["layers"] = int(w1.numel())
+
+    for key, tensor in state_dict.items():
+        if key.endswith("sgu.spatial_proj.weight"):
+            config["timesteps"] = int(tensor.shape[0])
+            break
+
+    for key, tensor in state_dict.items():
+        if key.endswith("V_map.U"):
+            config["batchsize"] = int(tensor.shape[0])
+            if "vocab_dim" not in config and tensor.ndim >= 2:
+                config["vocab_dim"] = int(tensor.shape[1])
+            break
+
+    for key, tensor in state_dict.items():
+        if key.endswith("U_map.weight"):
+            hidden_dim = int(tensor.shape[1])
+            config.setdefault("hidden_dim", hidden_dim)
+            ffn_dim = int(tensor.shape[0])
+            if ffn_dim % 2 == 0:
+                ffn_dim //= 2
+            config["ffn_dim"] = ffn_dim
+            break
+
+    return config
+
+
+def apply_checkpoint_overrides(args: Any, config: Dict[str, int], *, logger: Optional[logging.Logger] = None) -> Dict[str, Tuple[Any, Any]]:
+    """Update argument namespace so it matches checkpoint hyper-parameters."""
+
+    logger = logger or logging.getLogger(__name__)
+    overrides: Dict[str, Tuple[Any, Any]] = {}
+    for key, value in config.items():
+        if not hasattr(args, key):
+            continue
+        value = int(value)
+        current = getattr(args, key)
+        if current != value:
+            overrides[key] = (current, value)
+            logger.info("Checkpoint override: %s=%s (was %s)", key, value, current)
+        setattr(args, key, value)
+    return overrides
+
+
+def prepare_state_from_weights(args: Any, device, *, logger: Optional[logging.Logger] = None) -> Optional[Dict[str, Any]]:
+    """Load checkpoint weights and align CLI arguments with the stored model."""
+
+    if not getattr(args, "weights", None):
+        return None
+
+    logger = logger or logging.getLogger(__name__)
+    state_dict, source_key, stripped, metadata = load_checkpoint_state(args.weights, device)
+    config = infer_msdzip_model_config(state_dict)
+    overrides = apply_checkpoint_overrides(args, config, logger=logger)
+    logger.info("Loaded checkpoint from %s (source key: %s)", args.weights, source_key)
+    if config:
+        logger.info("Checkpoint-implied model configuration: %s", config)
+    return {
+        "state_dict": state_dict,
+        "source_key": source_key,
+        "stripped": stripped,
+        "metadata": metadata,
+        "config": config,
+        "overrides": overrides,
+    }
