@@ -64,6 +64,7 @@ from lposs.tools.infer_facade import (
     _get_device,
     _load_checkpoint,
 )
+from lposs.tools.tiles_dataset import materialise_tiles_dataset
 
 
 DEFAULT_CONFIG_DIR = Path(TRAIN_CONFIG_DIR)
@@ -75,6 +76,32 @@ class ModelSpec:
 
     label: str
     checkpoint: Optional[Path]
+
+
+def _get_training_dataset_cfg(cfg):
+    training_cfg = getattr(cfg, "training", None)
+    if training_cfg is None and isinstance(cfg, dict):
+        training_cfg = cfg.get("training")
+    if training_cfg is None:
+        return None
+    dataset_cfg = getattr(training_cfg, "dataset", None)
+    if dataset_cfg is None and isinstance(training_cfg, dict):
+        dataset_cfg = training_cfg.get("dataset")
+    return dataset_cfg
+
+
+def _set_dataset_cfg_value(dataset_cfg, key: str, value) -> None:
+    if dataset_cfg is None:
+        raise AttributeError("Configuration is missing training.dataset section")
+    try:
+        dataset_cfg[key] = value
+    except (TypeError, AttributeError):
+        if hasattr(dataset_cfg, key):
+            setattr(dataset_cfg, key, value)
+        elif isinstance(dataset_cfg, dict):
+            dataset_cfg[key] = value
+        else:
+            raise
 
 
 def _parse_args() -> argparse.Namespace:
@@ -126,9 +153,47 @@ def _parse_args() -> argparse.Namespace:
         "--splits",
         type=str,
         nargs="*",
-        default=("val",),
+        default=["val"],
         choices=("train", "val"),
         help="Dataset splits to evaluate. Supported values: train, val.",
+    )
+    parser.add_argument(
+        "--tiles-train",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "Paths to tiled dataset roots (images/+masks/) to materialise for evaluation. "
+            "Can be provided multiple times."
+        ),
+    )
+    parser.add_argument(
+        "--tiles-val",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "Optional tiled dataset roots dedicated to the validation split. "
+            "When omitted the training tiles are partitioned using --tiles-val-ratio."
+        ),
+    )
+    parser.add_argument(
+        "--tiles-val-ratio",
+        type=float,
+        default=0.1,
+        help="Fraction of training tiles to allocate to validation when --tiles-val is not provided.",
+    )
+    parser.add_argument(
+        "--tiles-class-aliases",
+        type=str,
+        default="",
+        help="Optional path to class aliases JSON for interpreting tile manifests.",
+    )
+    parser.add_argument(
+        "--tiles-seed",
+        type=int,
+        default=42,
+        help="Random seed controlling the train/val split when sampling from --tiles-train.",
     )
     parser.add_argument(
         "--max-samples",
@@ -344,6 +409,24 @@ def main() -> None:
         raise RuntimeError("numpy is required for evaluation. Install it with 'pip install numpy'.")
     if torch is None:
         raise RuntimeError("PyTorch is required for evaluation. Install it following the repository instructions.")
+    args.splits = [split.strip().lower() for split in (args.splits or []) if split]
+    if not args.splits:
+        args.splits = ["val"]
+    else:
+        seen = set()
+        normalised = []
+        for split in args.splits:
+            if split not in seen:
+                seen.add(split)
+                normalised.append(split)
+        args.splits = normalised
+    args.tiles_train = [str(Path(p).expanduser()) for p in getattr(args, "tiles_train", []) if p]
+    args.tiles_val = [str(Path(p).expanduser()) for p in getattr(args, "tiles_val", []) if p]
+    if getattr(args, "tiles_class_aliases", ""):
+        aliases_path = Path(args.tiles_class_aliases).expanduser()
+        if not aliases_path.is_file():
+            raise FileNotFoundError(f"Tiles class aliases file not found: {aliases_path}")
+        args.tiles_class_aliases = str(aliases_path)
     config_dir = Path(args.config_dir).resolve()
     cfg = _load_config(args.config_name, config_dir)
     if OmegaConf is not None and OmegaConf.is_config(cfg):
@@ -359,48 +442,66 @@ def main() -> None:
             cfg["output"] = str(output_dir)
         else:
             raise
-    split_dirs = _build_output_dirs(output_dir, args.splits)
 
     device = _get_device(args.device)
     logger = get_logger(cfg)
     logger.info("Evaluating models on device %s", device)
 
-    if args.dataset_root:
+    tiles_result = None
+    dataset_root_override: Optional[Path] = None
+    if args.tiles_train:
+        if args.dataset_root:
+            raise ValueError("Cannot combine --tiles-train with --dataset-root. Provide only one source.")
+        dataset_cfg = _get_training_dataset_cfg(cfg)
+        if dataset_cfg is None:
+            raise AttributeError(
+                "Unable to materialise tiles: configuration is missing training.dataset section."
+            )
+        materialised_root = output_dir / "_tiles_eval_dataset"
+        tiles_result = materialise_tiles_dataset(
+            args.tiles_train,
+            destination=materialised_root,
+            val_roots=args.tiles_val or None,
+            val_ratio=args.tiles_val_ratio,
+            seed=args.tiles_seed,
+            class_aliases=args.tiles_class_aliases,
+        )
+        dataset_root_override = tiles_result.root
+        _set_dataset_cfg_value(dataset_cfg, "data_root", str(dataset_root_override))
+        _set_dataset_cfg_value(dataset_cfg, "tile_mode", True)
+        _set_dataset_cfg_value(dataset_cfg, "recursive", True)
+        os.environ["FACADE_DATA_ROOT"] = str(dataset_root_override)
+        logger.info(
+            "Materialised tiles dataset at %s (train=%d, val=%d)",
+            dataset_root_override,
+            tiles_result.train_count,
+            tiles_result.val_count,
+        )
+        for split_name, counts in sorted(tiles_result.per_split_counts.items()):
+            if not counts:
+                continue
+            for source, count in sorted(counts.items()):
+                logger.info("  %s [%s]: %d tiles", split_name, source, count)
+        if args.splits == ["val"]:
+            if tiles_result.val_count > 0:
+                args.splits = ["train", "val"]
+            else:
+                args.splits = ["train"]
+    elif args.dataset_root:
         dataset_root = Path(args.dataset_root).expanduser().resolve()
         if not dataset_root.is_dir():
             raise FileNotFoundError(f"Dataset root not found: {dataset_root}")
-
-        def _assign_dataset_root(target):
-            if target is None:
-                return False
-            if hasattr(target, "dataset"):
-                dataset_cfg = target.dataset
-            elif isinstance(target, dict):
-                dataset_cfg = target.get("dataset")
-            else:
-                dataset_cfg = None
-            if dataset_cfg is None:
-                return False
-            if hasattr(dataset_cfg, "data_root"):
-                dataset_cfg.data_root = str(dataset_root)
-                return True
-            if isinstance(dataset_cfg, dict):
-                dataset_cfg["data_root"] = str(dataset_root)
-                return True
-            return False
-
-        assigned = False
-        training_cfg = getattr(cfg, "training", None)
-        if training_cfg is None and isinstance(cfg, dict):
-            training_cfg = cfg.get("training")
-        if training_cfg is not None:
-            assigned = _assign_dataset_root(training_cfg)
-        if not assigned:
+        dataset_cfg = _get_training_dataset_cfg(cfg)
+        if dataset_cfg is None:
             raise AttributeError(
                 "Unable to override dataset root: configuration is missing training.dataset section."
             )
+        _set_dataset_cfg_value(dataset_cfg, "data_root", str(dataset_root))
+        dataset_root_override = dataset_root
         os.environ["FACADE_DATA_ROOT"] = str(dataset_root)
         logger.info("Overriding dataset root to %s", dataset_root)
+
+    split_dirs = _build_output_dirs(output_dir, args.splits)
 
     train_loader, val_loader, mmseg_cfg = _build_datasets(
         cfg,

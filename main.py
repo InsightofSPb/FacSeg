@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 from utils.utils import *
 from datasets.datasets import *
 from model_zoo.models import *
+from lposs.tools.tiles_dataset import materialise_tiles_dataset
 
 torch.set_float32_matmul_precision('high')
 
@@ -216,118 +217,6 @@ def lposs_train(args):
                 return True
         return False
 
-    def _split_train_val(index, ratio: float, seed: int):
-        total = len(index.items)
-        if total <= 1:
-            return list(range(total)), []
-        ratio = max(0.0, min(1.0, float(ratio)))
-        ids = list(range(total))
-        random.Random(seed).shuffle(ids)
-        if ratio <= 0.0:
-            return sorted(ids), []
-        val_count = int(round(total * ratio))
-        val_count = max(1, min(total - 1, val_count))
-        val_ids = sorted(ids[:val_count])
-        train_ids = sorted(ids[val_count:])
-        return train_ids, val_ids
-
-    def _copy_materialised_file(src: Path, dst: Path) -> None:
-        """Copy ``src`` to ``dst`` ensuring the destination hierarchy exists.
-
-        The LPOSS data loaders expect real files and not symbolic links, so we
-        always materialise copies of the tiles instead of attempting to
-        symlink. ``copy2`` is used to retain metadata when possible while
-        gracefully handling repeated invocations.
-        """
-
-        if dst.exists():
-            return
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
-
-    def _prepare_tiles_dataset():
-        train_roots = getattr(args, "tiles_train", None) or []
-        val_roots = getattr(args, "tiles_val", None) or []
-        if not train_roots and not val_roots:
-            return None
-
-        if not train_roots:
-            raise ValueError("--tiles-train must be supplied when using lposs_train with tiles")
-
-        seg_index = MaskTilesIndex(train_roots, class_aliases=args.class_aliases)
-
-        seed = getattr(args, "prep_seed", 42)
-        use_external_val = bool(val_roots)
-        if use_external_val:
-            val_index = MaskTilesIndex(val_roots, class_aliases=args.class_aliases)
-            if list(val_index.classes) != list(seg_index.classes):
-                raise ValueError(
-                    "Validation tiles must contain the same set of classes as training tiles"
-                )
-            train_records = list(seg_index.items)
-            val_records = list(val_index.items)
-        else:
-            train_ids, val_ids = _split_train_val(seg_index, args.val_ratio, seed)
-            train_records = [seg_index.items[i] for i in train_ids]
-            val_records = [seg_index.items[i] for i in val_ids]
-
-        if not train_records:
-            raise RuntimeError("No training tiles found for LPOSS training")
-
-        base_dir = Path(args.out_dir or DEFAULT_OUT_DIR)
-        if not base_dir.is_absolute():
-            base_dir = (repo_root / base_dir).resolve()
-        dataset_root = base_dir / "_lposs_tiles_dataset"
-        if dataset_root.exists():
-            shutil.rmtree(dataset_root)
-
-        for split_name in ("train", "val"):
-            (dataset_root / "images" / split_name).mkdir(parents=True, exist_ok=True)
-            (dataset_root / "masks" / split_name).mkdir(parents=True, exist_ok=True)
-
-        def _link_records(records, dest_split: str):
-            split_name = (dest_split or "").strip()
-
-            for rec in records:
-                dataset_name = (rec.get("dataset") or "tiles").strip() or "tiles"
-                rel_img = Path(rec.get("relative_path") or Path(rec["path"]).name)
-
-                if rel_img.is_absolute():
-                    rel_img = (
-                        Path(*rel_img.parts[1:]) if len(rel_img.parts) > 1 else Path(rel_img.name)
-                    )
-
-                parts = [p for p in rel_img.parts if p not in ("", ".")]
-
-                if split_name and parts and parts[0] == split_name:
-                    parts = parts[1:]
-
-                if dataset_name and dataset_name != split_name:
-                    if not parts or parts[0] != dataset_name:
-                        parts = [dataset_name, *parts]
-
-                if parts:
-                    rel_img = Path(*parts)
-                else:
-                    rel_img = Path(Path(rec["path"]).name)
-
-                img_src = Path(rec["path"])
-                mask_path = rec.get("mask_path")
-                if not mask_path:
-                    raise RuntimeError(f"Tile '{img_src}' is missing an associated mask path")
-                mask_src = Path(mask_path)
-                img_dst = dataset_root / "images" / split_name / rel_img
-                mask_suffix = mask_src.suffix or ".png"
-                mask_rel = rel_img.with_suffix(mask_suffix)
-                mask_dst = dataset_root / "masks" / split_name / mask_rel
-                _copy_materialised_file(img_src, img_dst)
-                _copy_materialised_file(mask_src, mask_dst)
-
-        _link_records(train_records, "train")
-        _link_records(val_records, "val")
-
-        return dataset_root, len(train_records), len(val_records)
-
     config_dir: Optional[Path] = None
     config_name: Optional[str] = None
 
@@ -385,23 +274,43 @@ def lposs_train(args):
             overrides.append(f"training.max_epochs={int(args.epochs)}")
 
     dataset_summary = []
-    dataset_result = _prepare_tiles_dataset()
-    if dataset_result is not None:
-        dataset_root, train_tiles, val_tiles = dataset_result
-        dataset_value = json.dumps(str(dataset_root))
+    dataset_result = None
+    tiles_train = getattr(args, "tiles_train", None) or []
+    tiles_val = getattr(args, "tiles_val", None) or []
+    if tiles_train or tiles_val:
+        if not tiles_train:
+            raise ValueError("--tiles-train must be supplied when using lposs_train with tiles")
+
+        base_dir = Path(args.out_dir or DEFAULT_OUT_DIR)
+        if not base_dir.is_absolute():
+            base_dir = (repo_root / base_dir).resolve()
+        dataset_root = base_dir / "_lposs_tiles_dataset"
+        dataset_result = materialise_tiles_dataset(
+            tiles_train,
+            destination=dataset_root,
+            val_roots=tiles_val or None,
+            val_ratio=args.val_ratio,
+            seed=getattr(args, "prep_seed", 42),
+            class_aliases=args.class_aliases,
+        )
+        dataset_value = json.dumps(str(dataset_result.root))
         if not _has_override(overrides, "training.dataset.data_root"):
             overrides.append(f"training.dataset.data_root={dataset_value}")
         if not _has_override(overrides, "training.dataset.recursive"):
             overrides.append("training.dataset.recursive=true")
         if not _has_override(overrides, "training.dataset.tile_mode"):
             overrides.append("training.dataset.tile_mode=true")
-        os.environ["FACADE_DATA_ROOT"] = str(dataset_root)
-        dataset_summary.append(f"[i] materialised LPOSS dataset: {dataset_root}")
-        dataset_summary.append(f"    train tiles: {train_tiles}")
-        if val_tiles:
-            dataset_summary.append(f"    val tiles: {val_tiles}")
+        os.environ["FACADE_DATA_ROOT"] = str(dataset_result.root)
+        dataset_summary.append(f"[i] materialised LPOSS dataset: {dataset_result.root}")
+        dataset_summary.append(f"    train tiles: {dataset_result.train_count}")
+        if dataset_result.val_count:
+            dataset_summary.append(f"    val tiles: {dataset_result.val_count}")
         else:
             dataset_summary.append("    val tiles: 0 (skipped)")
+        for split_name, counter in sorted(dataset_result.per_split_counts.items()):
+            dataset_summary.append(f"    {split_name} per-source:")
+            for source, count in sorted(counter.items()):
+                dataset_summary.append(f"      - {source}: {count}")
 
     override_batch_size = any(
         arg == "--ovseg_batch_size" or arg.startswith("--ovseg_batch_size=")
