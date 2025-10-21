@@ -1,10 +1,10 @@
 """Quantitative evaluation utilities for facade damage models."""
 
 from __future__ import annotations
+import os
 import sys
 import argparse
 import json
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING
@@ -132,6 +132,15 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Optional cap on the number of samples processed per split (useful for smoke-tests).",
+    )
+    parser.add_argument(
+        "--dataset-root",
+        type=str,
+        default=None,
+        help=(
+            "Override the dataset root directory used for the Hydra configuration. "
+            "Equivalent to setting the FACADE_DATA_ROOT environment variable."
+        ),
     )
     return parser.parse_args()
 
@@ -335,6 +344,43 @@ def main() -> None:
     logger = get_logger(cfg)
     logger.info("Evaluating models on device %s", device)
 
+    if args.dataset_root:
+        dataset_root = Path(args.dataset_root).expanduser().resolve()
+        if not dataset_root.is_dir():
+            raise FileNotFoundError(f"Dataset root not found: {dataset_root}")
+
+        def _assign_dataset_root(target):
+            if target is None:
+                return False
+            if hasattr(target, "dataset"):
+                dataset_cfg = target.dataset
+            elif isinstance(target, dict):
+                dataset_cfg = target.get("dataset")
+            else:
+                dataset_cfg = None
+            if dataset_cfg is None:
+                return False
+            if hasattr(dataset_cfg, "data_root"):
+                dataset_cfg.data_root = str(dataset_root)
+                return True
+            if isinstance(dataset_cfg, dict):
+                dataset_cfg["data_root"] = str(dataset_root)
+                return True
+            return False
+
+        assigned = False
+        training_cfg = getattr(cfg, "training", None)
+        if training_cfg is None and isinstance(cfg, dict):
+            training_cfg = cfg.get("training")
+        if training_cfg is not None:
+            assigned = _assign_dataset_root(training_cfg)
+        if not assigned:
+            raise AttributeError(
+                "Unable to override dataset root: configuration is missing training.dataset section."
+            )
+        os.environ["FACADE_DATA_ROOT"] = str(dataset_root)
+        logger.info("Overriding dataset root to %s", dataset_root)
+
     train_loader, val_loader, mmseg_cfg = _build_datasets(
         cfg,
         include_repeats=False,
@@ -343,6 +389,26 @@ def main() -> None:
     class_names, _ = _extract_dataset_metadata(train_loader.dataset)
 
     loaders = {"train": train_loader, "val": val_loader}
+
+    dataset_sizes = {
+        "train": len(train_loader.dataset),
+        "val": len(val_loader.dataset),
+    }
+    for split, size in dataset_sizes.items():
+        if size == 0:
+            data_cfg = getattr(mmseg_cfg.data, split, None)
+            img_dir = None
+            if data_cfg is not None:
+                data_root = getattr(data_cfg, "data_root", None)
+                img_subdir = getattr(data_cfg, "img_dir", None)
+                if data_root and img_subdir:
+                    img_dir = Path(data_root) / img_subdir
+            message = f"No samples found for '{split}' split."
+            if img_dir is not None:
+                message += f" Expected images under {img_dir}."
+            if split in args.splits:
+                raise RuntimeError(message)
+            logger.warning(message)
 
     summary: Dict[str, Dict[str, float]] = {}
 
