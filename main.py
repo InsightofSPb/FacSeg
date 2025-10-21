@@ -4,6 +4,7 @@ import numpy as np
 import cv2
 from tqdm.auto import tqdm
 from typing import Dict, Optional
+from pathlib import Path
 # ensure project root on sys.path
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
@@ -41,7 +42,11 @@ def _count_image_files(directory: str, extensions=_IMAGE_EXTS) -> int:
 
 def parse_args():
     ap = argparse.ArgumentParser("Facade defects (OVSeg)")
-    ap.add_argument("--mode", choices=["ovseg_train", "ovseg_infer", "seg_prepare"], default="ovseg_train")
+    ap.add_argument(
+        "--mode",
+        choices=["ovseg_train", "ovseg_infer", "seg_prepare", "lposs_train"],
+        default="ovseg_train",
+    )
     ap.add_argument("--images_dir", type=str, default=DEFAULT_IMAGES_DIR)
     ap.add_argument("--coco_json",  type=str, default=DEFAULT_COCO_JSON)
     ap.add_argument("--test_dir",   type=str, default=DEFAULT_TEST_DIR)
@@ -103,7 +108,22 @@ def parse_args():
                     help="Какой набор аугментаций использовать при подготовке (влияет на нормировку при трене)")
     ap.add_argument("--prep_seed", type=int, default=42, help="Сид для аугментаций в seg_prepare")
 
-    args = ap.parse_args()
+    # LPOSS / Hydra bridge
+    ap.add_argument(
+        "--config",
+        type=str,
+        default="",
+        help="Hydra config path or name for lposs_train mode.",
+    )
+    ap.add_argument(
+        "--config_dir",
+        type=str,
+        default="",
+        help="Optional directory with Hydra configs (defaults to lposs/configs).",
+    )
+
+    args, hydra_overrides = ap.parse_known_args()
+    args.hydra_overrides = hydra_overrides
 
     for attr in ["images_dir", "coco_json", "test_dir", "test_coco_json", "out_dir", "prep_out_dir", "class_aliases", "ckpt", "aug_dump_dir", "aug_config"]:
         val = getattr(args, attr, "")
@@ -140,6 +160,99 @@ def parse_args():
         raise SystemExit
 
     return args
+
+
+
+def lposs_train(args):
+    try:
+        from hydra import compose, initialize_config_dir
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError(
+            "Hydra is required for lposs_train mode. Please install hydra-core."
+        ) from exc
+
+    try:
+        from lposs.tools.train_facade_baseline import (
+            CONFIG_DIR as LPOSS_CONFIG_DIR,
+            train as lposs_train_impl,
+        )
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError(
+            "Unable to import LPOSS training utilities. Ensure lposs dependencies are installed."
+        ) from exc
+
+    repo_root = Path(__file__).resolve().parent
+
+    config_value = getattr(args, "config", "") or ""
+    config_dir_value = getattr(args, "config_dir", "") or ""
+    overrides = list(getattr(args, "hydra_overrides", []))
+
+    config_dir: Optional[Path] = None
+    config_name: Optional[str] = None
+
+    if config_value:
+        candidate = Path(os.path.expanduser(config_value))
+        if not candidate.is_absolute():
+            candidate = (repo_root / candidate).resolve()
+        if candidate.is_file():
+            config_dir = candidate.parent
+            config_name = candidate.name
+        else:
+            config_name = candidate.name
+            parent = candidate.parent
+            if str(parent) not in {"", "."}:
+                if not parent.is_absolute():
+                    parent = (repo_root / parent).resolve()
+                config_dir = parent
+
+    if config_dir_value:
+        explicit_dir = Path(os.path.expanduser(config_dir_value))
+        if not explicit_dir.is_absolute():
+            explicit_dir = (repo_root / explicit_dir).resolve()
+        config_dir = explicit_dir
+
+    if config_dir is None:
+        config_dir = Path(LPOSS_CONFIG_DIR)
+    config_dir = config_dir.resolve()
+    if not config_dir.is_dir():
+        raise FileNotFoundError(f"Hydra config directory not found: {config_dir}")
+
+    if not config_name:
+        config_name = "facade_baseline.yaml"
+
+    config_path = config_dir / config_name
+    if not config_path.exists():
+        if not config_name.endswith(".yaml"):
+            alt_name = f"{config_name}.yaml"
+            alt_path = config_dir / alt_name
+            if alt_path.exists():
+                config_name = alt_name
+                config_path = alt_path
+        if not config_path.exists():
+            raise FileNotFoundError(
+                f"Hydra config '{config_name}' not found in directory {config_dir}"
+            )
+
+    override_out_dir = any(arg == "--out_dir" or arg.startswith("--out_dir=") for arg in sys.argv[1:])
+    if override_out_dir:
+        if not any(str(ov).split("=", 1)[0] == "output" for ov in overrides if "=" in ov):
+            overrides.append(f"output={args.out_dir}")
+
+    override_epochs = any(arg == "--epochs" or arg.startswith("--epochs=") for arg in sys.argv[1:])
+    if override_epochs:
+        if not any(str(ov).split("=", 1)[0] == "training.max_epochs" for ov in overrides if "=" in ov):
+            overrides.append(f"training.max_epochs={int(args.epochs)}")
+
+    print(f"[i] LPOSS config: {config_path}")
+    if overrides:
+        print("[i] Hydra overrides:")
+        for item in overrides:
+            print(f"    - {item}")
+
+    with initialize_config_dir(config_dir=str(config_dir), version_base=None):
+        cfg = compose(config_name=config_name, overrides=overrides)
+
+    lposs_train_impl(cfg)
 
 
 
@@ -1030,6 +1143,10 @@ def ovseg_infer(args, device):
 
 def main():
     args = parse_args()
+    if args.mode == "lposs_train" or (args.mode == "ovseg_train" and getattr(args, "config", "")):
+        lposs_train(args)
+        return
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if args.mode == "ovseg_train":

@@ -290,9 +290,17 @@ matches the model’s `1024×1024` training scale【F:lposs/segmentation/configs
    section). The baseline configuration reads the prepared dataset directly:
 
    ```bash
-   python main.py --config lposs/configs/facade_baseline.yaml \
-     training.dataset.data_root=/home/sasha/Facade_segmentation/dataset_final
+   python main.py --mode lposs_train --config lposs/configs/facade_baseline.yaml \
+     training.dataset.data_root=/home/sasha/Facade_segmentation/dataset_final \
+     --out_dir results/facade_baseline_run1
    ```
+
+   The `--mode lposs_train` flag switches the CLI to the LPOSS/Hydra training
+   pipeline (supplying `--config` without `--mode` also auto-selects it). Any
+   additional trailing arguments such as `training.max_epochs=200` or
+   `evaluate.task=[]` are forwarded to Hydra as overrides. The familiar
+   `--epochs` and `--out_dir` options continue to work and map to
+   `training.max_epochs` and `output` respectively for convenience.
 
    Before training you can double-check the merged tiles with
    `tools/preview_tiled_dataset.py`. It samples a handful of image/mask pairs
