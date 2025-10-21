@@ -134,13 +134,16 @@ def _build_datasets(
                 steps.append(dict(type="LoadAnnotations"))
             steps.append(dict(type="Normalize", **copy.deepcopy(norm_cfg)))
             steps.append(dict(type="ImageToTensor", keys=["img"]))
+            collect_meta_keys = [
+                key for key in meta_keys if key not in {"flip", "flip_direction"}
+            ]
             if include_annotations:
                 steps.append(dict(type="ToTensor", keys=["gt_semantic_seg"]))
                 steps.append(
                     dict(
                         type="Collect",
                         keys=["img", "gt_semantic_seg"],
-                        meta_keys=list(meta_keys),
+                        meta_keys=list(collect_meta_keys),
                     )
                 )
             else:
@@ -148,7 +151,7 @@ def _build_datasets(
                     dict(
                         type="Collect",
                         keys=["img"],
-                        meta_keys=list(meta_keys),
+                        meta_keys=list(collect_meta_keys),
                     )
                 )
             return steps
