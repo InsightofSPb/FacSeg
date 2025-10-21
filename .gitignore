@@ -13,3 +13,5 @@ lposs/data/
 *.csv
 *.json
 tiles/*
+__pycache__/
+*.pyc
