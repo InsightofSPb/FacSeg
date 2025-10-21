@@ -1,10 +1,16 @@
-import cv2
 import numpy as np
 import torch
+
+try:
+    import cv2
+except ImportError:  # pragma: no cover
+    cv2 = None
 
 
 # General util function to get the boundary of a binary mask.
 def mask_to_boundary(mask, dilation_ratio=0.02):
+    if cv2 is None:
+        raise ImportError("OpenCV is required for boundary IoU computation.")
     """
     Convert binary mask to boundary mask.
     :param mask (numpy array, uint8): binary mask
@@ -54,7 +60,7 @@ def boundary_iou(gt, dt, num_classes, dilation_ratio=0.02, ignore_index=255, red
         gt[gt == ignore_index - 1] = ignore_index
     dt[gt == ignore_index] = ignore_index
 
-    for cls_idx in (set(np.unique(gt)).union(np.unique(dt)))-set([ignore_index]):
+    for cls_idx in (set(np.unique(gt)).union(np.unique(dt))) - {ignore_index}:
         gt_bin = (gt == cls_idx).astype(np.uint8)
         dt_bin = (dt == cls_idx).astype(np.uint8)
         _, inter, uni, ap, agt = boundary_iou_per_mask(gt_bin, dt_bin, dilation_ratio=dilation_ratio)
@@ -63,4 +69,9 @@ def boundary_iou(gt, dt, num_classes, dilation_ratio=0.02, ignore_index=255, red
         area_pred[cls_idx] += ap
         area_gt[cls_idx] += agt
 
-    return torch.tensor(intersection), torch.tensor(union), torch.tensor(area_pred), torch.tensor(area_gt)
+    return (
+        torch.tensor(intersection),
+        torch.tensor(union),
+        torch.tensor(area_pred),
+        torch.tensor(area_gt),
+    )

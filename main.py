@@ -1,8 +1,10 @@
-import os, json, argparse, random, sys, re
+import os, json, argparse, random, sys, re, math, shutil
+from collections import Counter
 import numpy as np
 import cv2
 from tqdm.auto import tqdm
-from typing import Optional
+from typing import Dict, Optional
+from pathlib import Path
 # ensure project root on sys.path
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
@@ -25,14 +27,47 @@ DEFAULT_OUT_DIR = "/home/sasha/Facade_segmentation/results"
 DEFAULT_PREPARED_DIR = "/home/sasha/Facade_segmentation/prepared"
 
 
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
+
+
+def _count_image_files(directory: str, extensions=_IMAGE_EXTS) -> int:
+    total = 0
+    low_exts = tuple(ext.lower() for ext in extensions)
+    for root, _, files in os.walk(directory):
+        for name in files:
+            if name.lower().endswith(low_exts):
+                total += 1
+    return total
+
+
 def parse_args():
     ap = argparse.ArgumentParser("Facade defects (OVSeg)")
-    ap.add_argument("--mode", choices=["ovseg_train", "ovseg_infer", "seg_prepare"], default="ovseg_train")
+    ap.add_argument(
+        "--mode",
+        choices=["ovseg_train", "ovseg_infer", "seg_prepare", "lposs_train"],
+        default="ovseg_train",
+    )
     ap.add_argument("--images_dir", type=str, default=DEFAULT_IMAGES_DIR)
     ap.add_argument("--coco_json",  type=str, default=DEFAULT_COCO_JSON)
     ap.add_argument("--test_dir",   type=str, default=DEFAULT_TEST_DIR)
     ap.add_argument("--test_coco_json", type=str, default=DEFAULT_COCO_JSON)
     ap.add_argument("--out_dir",    type=str, default=DEFAULT_OUT_DIR)
+    ap.add_argument(
+        "--tiles-train",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Path to a tiled dataset root (images/+masks/) for training."
+             " Can be provided multiple times.",
+    )
+    ap.add_argument(
+        "--tiles-val",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Optional tiled dataset roots to use for validation."
+             " When omitted the training tiles are split via --val_ratio.",
+    )
     ap.add_argument("--compile", action="store_true")
     ap.add_argument("--compile_mode", default="default")
     ap.add_argument("--compile_backend", default=None)
@@ -47,6 +82,8 @@ def parse_args():
                     help="Каталог для сохранения примеров аугментаций (train)")
     ap.add_argument("--aug_dump_limit", type=int, default=0,
                     help="Сколько аугментированных семплов сохранить (0=выкл)")
+    ap.add_argument("--aug_config", type=str, default="",
+                    help="Путь к JSON с переопределениями аугментаций (prepare/train)")
     # ovseg
     ap.add_argument("--epochs", type=int, default=500)
     ap.add_argument("--ovseg_img_size", type=int, default=512)
@@ -61,6 +98,8 @@ def parse_args():
     ap.add_argument("--ovseg_decoder_dropout", type=float, default=0.1)
     ap.add_argument("--train_miou_ratio", type=float, default=0.25,
                     help="Доля train для оценки mIoU/F1 после эпохи (0..1, 0=пропустить, 1=всё)")
+    ap.add_argument("--val_checks_per_epoch", type=int, default=1,
+                    help="Сколько раз запускать валидацию на эпоху (>=1)")
     # checkpoints
     ap.add_argument("--ckpt", type=str, default="", help="Path to load checkpoint for infer / resume")
     ap.add_argument("--prep_out_dir", type=str, default=DEFAULT_PREPARED_DIR,
@@ -69,12 +108,57 @@ def parse_args():
                     help="Какой набор аугментаций использовать при подготовке (влияет на нормировку при трене)")
     ap.add_argument("--prep_seed", type=int, default=42, help="Сид для аугментаций в seg_prepare")
 
-    args = ap.parse_args()
+    # LPOSS / Hydra bridge
+    ap.add_argument(
+        "--config",
+        type=str,
+        default="",
+        help="Hydra config path or name for lposs_train mode.",
+    )
+    ap.add_argument(
+        "--config_dir",
+        type=str,
+        default="",
+        help="Optional directory with Hydra configs (defaults to lposs/configs).",
+    )
+    ap.add_argument(
+        "--lposs_sanity_limit",
+        type=int,
+        default=20,
+        help="Approximate total number of samples to process during the LPOSS sanity check.",
+    )
+    ap.add_argument(
+        "--lposs_sanity_check",
+        dest="lposs_sanity_check",
+        action="store_true",
+        help="Enable the automatic LPOSS sanity check before training (default).",
+    )
+    ap.add_argument(
+        "--no_lposs_sanity_check",
+        dest="lposs_sanity_check",
+        action="store_false",
+        help="Disable the automatic LPOSS sanity check before training.",
+    )
+    ap.set_defaults(lposs_sanity_check=True)
 
-    for attr in ["images_dir", "coco_json", "test_dir", "test_coco_json", "out_dir", "prep_out_dir", "class_aliases", "ckpt", "aug_dump_dir"]:
+    args, hydra_overrides = ap.parse_known_args()
+    args.hydra_overrides = hydra_overrides
+
+    for attr in ["images_dir", "coco_json", "test_dir", "test_coco_json", "out_dir", "prep_out_dir", "class_aliases", "ckpt", "aug_dump_dir", "aug_config"]:
         val = getattr(args, attr, "")
         if isinstance(val, str):
             setattr(args, attr, os.path.expanduser(val.strip()))
+
+    args.tiles_train = [os.path.expanduser(p.strip()) for p in (args.tiles_train or [])]
+    args.tiles_val = [os.path.expanduser(p.strip()) for p in (args.tiles_val or [])]
+
+    args.aug_config_data = {}
+    if args.aug_config:
+        with open(args.aug_config, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        if not isinstance(cfg, dict):
+            raise ValueError("aug_config JSON должен содержать объект верхнего уровня")
+        args.aug_config_data = cfg
 
     if args.dump_aliases_template:
         template = {
@@ -95,6 +179,278 @@ def parse_args():
         raise SystemExit
 
     return args
+
+
+
+def lposs_train(args):
+    try:
+        from hydra import compose, initialize_config_dir
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError(
+            "Hydra is required for lposs_train mode. Please install hydra-core."
+        ) from exc
+
+    try:
+        from lposs.tools.train_facade_baseline import (
+            CONFIG_DIR as LPOSS_CONFIG_DIR,
+            train as lposs_train_impl,
+        )
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError(
+            "Unable to import LPOSS training utilities. Ensure lposs dependencies are installed."
+        ) from exc
+
+    repo_root = Path(__file__).resolve().parent
+
+    config_value = getattr(args, "config", "") or ""
+    config_dir_value = getattr(args, "config_dir", "") or ""
+    overrides = list(getattr(args, "hydra_overrides", []))
+
+    def _has_override(overrides_list, key: str) -> bool:
+        for entry in overrides_list:
+            text = str(entry)
+            if "=" not in text:
+                continue
+            lhs = text.split("=", 1)[0].lstrip("+-~")
+            if lhs == key:
+                return True
+        return False
+
+    def _split_train_val(index, ratio: float, seed: int):
+        total = len(index.items)
+        if total <= 1:
+            return list(range(total)), []
+        ratio = max(0.0, min(1.0, float(ratio)))
+        ids = list(range(total))
+        random.Random(seed).shuffle(ids)
+        if ratio <= 0.0:
+            return sorted(ids), []
+        val_count = int(round(total * ratio))
+        val_count = max(1, min(total - 1, val_count))
+        val_ids = sorted(ids[:val_count])
+        train_ids = sorted(ids[val_count:])
+        return train_ids, val_ids
+
+    def _copy_materialised_file(src: Path, dst: Path) -> None:
+        """Copy ``src`` to ``dst`` ensuring the destination hierarchy exists.
+
+        The LPOSS data loaders expect real files and not symbolic links, so we
+        always materialise copies of the tiles instead of attempting to
+        symlink. ``copy2`` is used to retain metadata when possible while
+        gracefully handling repeated invocations.
+        """
+
+        if dst.exists():
+            return
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+
+    def _prepare_tiles_dataset():
+        train_roots = getattr(args, "tiles_train", None) or []
+        val_roots = getattr(args, "tiles_val", None) or []
+        if not train_roots and not val_roots:
+            return None
+
+        if not train_roots:
+            raise ValueError("--tiles-train must be supplied when using lposs_train with tiles")
+
+        seg_index = MaskTilesIndex(train_roots, class_aliases=args.class_aliases)
+
+        seed = getattr(args, "prep_seed", 42)
+        use_external_val = bool(val_roots)
+        if use_external_val:
+            val_index = MaskTilesIndex(val_roots, class_aliases=args.class_aliases)
+            if list(val_index.classes) != list(seg_index.classes):
+                raise ValueError(
+                    "Validation tiles must contain the same set of classes as training tiles"
+                )
+            train_records = list(seg_index.items)
+            val_records = list(val_index.items)
+        else:
+            train_ids, val_ids = _split_train_val(seg_index, args.val_ratio, seed)
+            train_records = [seg_index.items[i] for i in train_ids]
+            val_records = [seg_index.items[i] for i in val_ids]
+
+        if not train_records:
+            raise RuntimeError("No training tiles found for LPOSS training")
+
+        base_dir = Path(args.out_dir or DEFAULT_OUT_DIR)
+        if not base_dir.is_absolute():
+            base_dir = (repo_root / base_dir).resolve()
+        dataset_root = base_dir / "_lposs_tiles_dataset"
+        if dataset_root.exists():
+            shutil.rmtree(dataset_root)
+
+        for split_name in ("train", "val"):
+            (dataset_root / "images" / split_name).mkdir(parents=True, exist_ok=True)
+            (dataset_root / "masks" / split_name).mkdir(parents=True, exist_ok=True)
+
+        def _link_records(records, dest_split: str):
+            split_name = (dest_split or "").strip()
+
+            for rec in records:
+                dataset_name = (rec.get("dataset") or "tiles").strip() or "tiles"
+                rel_img = Path(rec.get("relative_path") or Path(rec["path"]).name)
+
+                if rel_img.is_absolute():
+                    rel_img = (
+                        Path(*rel_img.parts[1:]) if len(rel_img.parts) > 1 else Path(rel_img.name)
+                    )
+
+                parts = [p for p in rel_img.parts if p not in ("", ".")]
+
+                if split_name and parts and parts[0] == split_name:
+                    parts = parts[1:]
+
+                if dataset_name and dataset_name != split_name:
+                    if not parts or parts[0] != dataset_name:
+                        parts = [dataset_name, *parts]
+
+                if parts:
+                    rel_img = Path(*parts)
+                else:
+                    rel_img = Path(Path(rec["path"]).name)
+
+                img_src = Path(rec["path"])
+                mask_path = rec.get("mask_path")
+                if not mask_path:
+                    raise RuntimeError(f"Tile '{img_src}' is missing an associated mask path")
+                mask_src = Path(mask_path)
+                img_dst = dataset_root / "images" / split_name / rel_img
+                mask_suffix = mask_src.suffix or ".png"
+                mask_rel = rel_img.with_suffix(mask_suffix)
+                mask_dst = dataset_root / "masks" / split_name / mask_rel
+                _copy_materialised_file(img_src, img_dst)
+                _copy_materialised_file(mask_src, mask_dst)
+
+        _link_records(train_records, "train")
+        _link_records(val_records, "val")
+
+        return dataset_root, len(train_records), len(val_records)
+
+    config_dir: Optional[Path] = None
+    config_name: Optional[str] = None
+
+    if config_value:
+        candidate = Path(os.path.expanduser(config_value))
+        if not candidate.is_absolute():
+            candidate = (repo_root / candidate).resolve()
+        if candidate.is_file():
+            config_dir = candidate.parent
+            config_name = candidate.name
+        else:
+            config_name = candidate.name
+            parent = candidate.parent
+            if str(parent) not in {"", "."}:
+                if not parent.is_absolute():
+                    parent = (repo_root / parent).resolve()
+                config_dir = parent
+
+    if config_dir_value:
+        explicit_dir = Path(os.path.expanduser(config_dir_value))
+        if not explicit_dir.is_absolute():
+            explicit_dir = (repo_root / explicit_dir).resolve()
+        config_dir = explicit_dir
+
+    if config_dir is None:
+        config_dir = Path(LPOSS_CONFIG_DIR)
+    config_dir = config_dir.resolve()
+    if not config_dir.is_dir():
+        raise FileNotFoundError(f"Hydra config directory not found: {config_dir}")
+
+    if not config_name:
+        config_name = "facade_baseline.yaml"
+
+    config_path = config_dir / config_name
+    if not config_path.exists():
+        if not config_name.endswith(".yaml"):
+            alt_name = f"{config_name}.yaml"
+            alt_path = config_dir / alt_name
+            if alt_path.exists():
+                config_name = alt_name
+                config_path = alt_path
+        if not config_path.exists():
+            raise FileNotFoundError(
+                f"Hydra config '{config_name}' not found in directory {config_dir}"
+            )
+
+    override_out_dir = any(arg == "--out_dir" or arg.startswith("--out_dir=") for arg in sys.argv[1:])
+    if override_out_dir:
+        if not any(str(ov).split("=", 1)[0] == "output" for ov in overrides if "=" in ov):
+            overrides.append(f"output={args.out_dir}")
+
+    override_epochs = any(arg == "--epochs" or arg.startswith("--epochs=") for arg in sys.argv[1:])
+    if override_epochs:
+        if not any(str(ov).split("=", 1)[0] == "training.max_epochs" for ov in overrides if "=" in ov):
+            overrides.append(f"training.max_epochs={int(args.epochs)}")
+
+    dataset_summary = []
+    dataset_result = _prepare_tiles_dataset()
+    if dataset_result is not None:
+        dataset_root, train_tiles, val_tiles = dataset_result
+        dataset_value = json.dumps(str(dataset_root))
+        if not _has_override(overrides, "training.dataset.data_root"):
+            overrides.append(f"training.dataset.data_root={dataset_value}")
+        if not _has_override(overrides, "training.dataset.recursive"):
+            overrides.append("training.dataset.recursive=true")
+        if not _has_override(overrides, "training.dataset.tile_mode"):
+            overrides.append("training.dataset.tile_mode=true")
+        os.environ["FACADE_DATA_ROOT"] = str(dataset_root)
+        dataset_summary.append(f"[i] materialised LPOSS dataset: {dataset_root}")
+        dataset_summary.append(f"    train tiles: {train_tiles}")
+        if val_tiles:
+            dataset_summary.append(f"    val tiles: {val_tiles}")
+        else:
+            dataset_summary.append("    val tiles: 0 (skipped)")
+
+    override_batch_size = any(
+        arg == "--ovseg_batch_size" or arg.startswith("--ovseg_batch_size=")
+        for arg in sys.argv[1:]
+    )
+    if override_batch_size:
+        batch_value = max(1, int(args.ovseg_batch_size))
+        if not _has_override(overrides, "training.samples_per_gpu"):
+            overrides.append(f"training.samples_per_gpu={batch_value}")
+        if not _has_override(overrides, "training.val_samples_per_gpu"):
+            overrides.append(f"training.val_samples_per_gpu={batch_value}")
+
+    override_dup = any(arg == "--ovseg_dup" or arg.startswith("--ovseg_dup=") for arg in sys.argv[1:])
+    if override_dup:
+        dup_value = max(1, int(args.ovseg_dup))
+        if not _has_override(overrides, "training.dataset.repeat_times"):
+            overrides.append(f"training.dataset.repeat_times={dup_value}")
+
+    print(f"[i] LPOSS config: {config_path}")
+    for line in dataset_summary:
+        print(line)
+    if overrides:
+        print("[i] Hydra overrides:")
+        for item in overrides:
+            print(f"    - {item}")
+
+    sanity_flag = getattr(args, "lposs_sanity_check", True)
+    sanity_limit_raw = getattr(args, "lposs_sanity_limit", 20)
+    try:
+        sanity_limit_value = int(sanity_limit_raw)
+    except (TypeError, ValueError):
+        sanity_limit_value = 20
+    if sanity_limit_value < 1:
+        sanity_limit_value = 1
+    if sanity_flag:
+        print(
+            f"[i] LPOSS sanity check: enabled (limit ≈ {max(2, sanity_limit_value)} samples)"
+        )
+    else:
+        print("[i] LPOSS sanity check: disabled via flag")
+
+    with initialize_config_dir(config_dir=str(config_dir), version_base=None):
+        cfg = compose(config_name=config_name, overrides=overrides)
+
+    lposs_train_impl(
+        cfg,
+        sanity_check=sanity_flag,
+        sanity_sample_limit=max(1, sanity_limit_value),
+    )
 
 
 
@@ -180,25 +536,38 @@ def _default_class_order(num_classes):
     return base[:num_classes]
 
 
-def evaluate_segmentation_full(model, dl, device, criterion):
+def evaluate_segmentation_full(model, dl, device, criterion, desc: Optional[str] = None, leave: bool = False):
     model.eval()
     losses = []
     hist = None
     K = None
+    iterator = dl
+    pbar = None
+    if desc is not None:
+        pbar = tqdm(dl, desc=desc, leave=leave)
+        iterator = pbar
     with torch.no_grad():
-        for x, y, _ in dl:
+        loss_sum = 0.0
+        for x, y, _ in iterator:
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True).long()
             out = model(x)["out"]
             if out.shape[-2:] != y.shape[-2:]:
                 out = F.interpolate(out, size=y.shape[-2:], mode="bilinear", align_corners=False)
             loss = criterion(out, y)
-            losses.append(float(loss.item()))
+            current_loss = float(loss.item())
+            losses.append(current_loss)
+            loss_sum += current_loss
+            if pbar is not None:
+                avg_loss = loss_sum / len(losses)
+                pbar.set_postfix({"loss": current_loss, "loss_avg": avg_loss})
             pred = out.argmax(1)
             if K is None:
                 K = out.shape[1]
             h = seg_hist_np(pred.cpu().numpy(), y.cpu().numpy(), K)
             hist = h if hist is None else (hist + h)
+    if pbar is not None:
+        pbar.close()
     avg_loss = float(np.mean(losses)) if losses else float("inf")
     metrics = seg_metrics_from_hist(hist, ignore_background=True) if hist is not None else {
         "pixel_acc": 0.0,
@@ -248,7 +617,7 @@ def _resize_image_and_mask(image: np.ndarray, mask: np.ndarray, size: int):
     return resized_image, resized_mask
 def _export_seg_split(seg_index: SegIndex, idxs, split_name: str, out_root: str,
                       size: int, norm_mode: str, alpha: float = 0.6, crop_conf=None,
-                      rng: Optional[random.Random] = None):
+                      rng: Optional[random.Random] = None, prepare_aug_config=None):
     split_root = os.path.join(out_root, split_name)
     img_dir = os.path.join(split_root, "images")
     mask_dir = os.path.join(split_root, "masks")
@@ -262,7 +631,8 @@ def _export_seg_split(seg_index: SegIndex, idxs, split_name: str, out_root: str,
     crop_count = max(0, int(crop_conf.get("count", 1)))
     crop_min = int(crop_conf.get("min_size", size))
     crop_max = int(crop_conf.get("max_size", size))
-    tf = build_prepare_tf(split_name, norm_mode, include_normalize=False)
+    tf = build_prepare_tf(split_name, norm_mode, include_normalize=False,
+                          aug_config=prepare_aug_config or {})
     tf_pipeline = [type(t).__name__ for t in getattr(tf, "transforms", [])]
     meta = []
     duplicate_groups = {}
@@ -426,10 +796,13 @@ def seg_prepare(args):
         "max_size": args.prep_test_crop_max,
     }
 
+    prepare_cfg = (args.aug_config_data or {}).get("prepare", {})
     _export_seg_split(seg_index, tr_idx, "train", args.prep_out_dir, args.ovseg_img_size,
-                      norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha)
+                      norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha,
+                      prepare_aug_config=prepare_cfg)
     _export_seg_split(seg_index, va_idx, "val", args.prep_out_dir, args.ovseg_img_size,
-                        norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha)
+                        norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha,
+                        prepare_aug_config=prepare_cfg)
 
     if args.test_dir and os.path.isdir(args.test_dir):
         test_json = args.test_coco_json if args.test_coco_json else args.coco_json
@@ -443,7 +816,8 @@ def seg_prepare(args):
                 test_idxs = list(range(len(seg_index_test.items)))
                 print(f"[i] подготовка test={len(test_idxs)}")
                 _export_seg_split(seg_index_test, test_idxs, "test", args.prep_out_dir, args.ovseg_img_size,
-                                  norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha)
+                                  norm_mode=args.prep_norm_mode, alpha=args.vis_max_alpha,
+                                  prepare_aug_config=prepare_cfg)
         except Exception as exc:
             print(f"[!] не удалось подготовить тестовый набор: {exc}")
 
@@ -454,14 +828,81 @@ def seg_prepare(args):
 def ovseg_train(args, device):
     out_dir = stamp_out_dir(args.out_dir)
     print(f"[i] results will be saved to: {out_dir}")
-    seg_index = SegIndex(args.images_dir, args.coco_json, class_aliases=args.class_aliases)
+    using_tiles = bool(getattr(args, "tiles_train", None))
+    if using_tiles:
+        seg_index = MaskTilesIndex(args.tiles_train, class_aliases=args.class_aliases)
+        val_index = seg_index
+        if args.tiles_val:
+            val_index = MaskTilesIndex(args.tiles_val, class_aliases=args.class_aliases)
+            tr_idx_orig = list(range(len(seg_index.items)))
+            va_idx = list(range(len(val_index.items)))
+        else:
+            tr_idx_orig, va_idx = seg_index.split_by_images(val_ratio=args.val_ratio, seed=42)
+    else:
+        seg_index = SegIndex(args.images_dir, args.coco_json, class_aliases=args.class_aliases)
+        val_index = seg_index
+        tr_idx_orig, va_idx = seg_index.split_by_images(val_ratio=args.val_ratio, seed=42)
 
-    tr_idx_orig, va_idx = seg_index.split_by_images(val_ratio=args.val_ratio, seed=42)
+    total_indexed = len(seg_index.items)
+    print(
+        f"[i] dataset built: {total_indexed} images with masks across "
+        f"{len(seg_index.classes)} classes"
+    )
+
+    if using_tiles:
+        per_root = getattr(seg_index, "per_root_counts", {})
+        if per_root:
+            print("[i] per-tileset image counts:")
+            for name, count in sorted(per_root.items()):
+                print(f"      {name}: {count}")
+        dropped_empty = getattr(seg_index, "dropped_empty", {})
+        for name, count in sorted(dropped_empty.items()):
+            if count > 0:
+                print(f"[i] dropped {count} empty tiles from {name} (keep_empty=False)")
+    else:
+        if os.path.isdir(args.images_dir):
+            try:
+                total_files = _count_image_files(args.images_dir)
+                print(
+                    f"[i] source directory contains {total_files} image files; "
+                    f"{total_indexed} matched the annotations"
+                )
+            except Exception as exc:
+                print(f"[i] warning: unable to count files in {args.images_dir}: {exc}")
+
+        buckets = Counter()
+        for rec in seg_index.items:
+            try:
+                rel = os.path.relpath(rec["path"], args.images_dir)
+            except ValueError:
+                rel = os.path.basename(rec["path"])
+            rel = rel.replace("\\", "/")
+            parts = [p for p in rel.split("/") if p]
+            bucket = parts[0] if len(parts) > 1 else "."
+            buckets[bucket] += 1
+
+        if len(buckets) > 1:
+            print("[i] per-subdirectory image counts:")
+            for name, count in sorted(buckets.items()):
+                label = name if name != "." else "(root)"
+                print(f"      {label}: {count}")
+
+    if val_index is seg_index:
+        print(
+            f"[i] split summary: train={len(tr_idx_orig)} | val={len(va_idx)} "
+            f"(val_ratio={args.val_ratio:.2f})"
+        )
+    else:
+        print(
+            f"[i] split summary: train tiles={len(tr_idx_orig)} | val tiles={len(va_idx)} "
+            "(external validation roots)"
+        )
     tr_idx = []
     for _ in range(max(1, args.ovseg_dup)):
         tr_idx += tr_idx_orig
     print(f"[i] training images: {len(tr_idx_orig)} (dup x{args.ovseg_dup} -> {len(tr_idx)}) | val images: {len(va_idx)}")
 
+    dataset_cfg = (args.aug_config_data or {}).get("dataset", {})
     ds_tr = SegDataset(
         seg_index,
         tr_idx,
@@ -470,10 +911,50 @@ def ovseg_train(args, device):
         norm_mode="clip",
         aug_dump_dir=args.aug_dump_dir,
         aug_dump_limit=args.aug_dump_limit,
+        aug_config=dataset_cfg,
     )
-    ds_va = SegDataset(seg_index, va_idx, train=False, size=args.ovseg_img_size, norm_mode="clip")
+    ds_va = SegDataset(
+        val_index,
+        va_idx,
+        train=False,
+        size=args.ovseg_img_size,
+        norm_mode="clip",
+        aug_config=dataset_cfg,
+    )
     dl_tr = DataLoader(ds_tr, batch_size=args.ovseg_batch_size, shuffle=True,  num_workers=2, pin_memory=True, persistent_workers=True, prefetch_factor=2)
     dl_va = DataLoader(ds_va, batch_size=args.ovseg_batch_size, shuffle=False, num_workers=2, pin_memory=True, persistent_workers=True, prefetch_factor=2)
+
+    train_meta = getattr(seg_index, "meta_by_path", {})
+    val_meta = getattr(val_index, "meta_by_path", train_meta)
+    train_root_hint = args.images_dir if not using_tiles else ""
+    val_root_hint = train_root_hint
+    if using_tiles:
+        roots = getattr(seg_index, "root_infos", {})
+        if roots:
+            first = next(iter(roots.values()))
+            train_root_hint = str(first.get("images_dir", ""))
+        val_roots = getattr(val_index, "root_infos", roots)
+        if val_roots:
+            first_val = next(iter(val_roots.values()))
+            val_root_hint = str(first_val.get("images_dir", ""))
+
+    def _resolve_rel_path(path_str: str, meta_map: Dict[str, Dict[str, str]], root_hint: str = "") -> str:
+        info = meta_map.get(path_str)
+        if info:
+            rel = info.get("relative_path")
+            dataset = info.get("dataset")
+            if rel:
+                rel = rel.replace("\\", "/")
+                if dataset and dataset not in {"", "."}:
+                    return f"{dataset}/{rel}"
+                return rel
+        if root_hint:
+            try:
+                rel = os.path.relpath(path_str, root_hint)
+                return rel.replace("\\", "/")
+            except Exception:
+                pass
+        return path_str
 
     model = OvSegModel(args.ovseg_model, args.ovseg_ckpt, seg_index.num_classes,
                        freeze_backbone=args.ovseg_freeze_backbone,
@@ -520,21 +1001,86 @@ def ovseg_train(args, device):
     vis_epochs = [ep for ep in vis_epochs if 1 <= ep <= args.epochs]
 
     for ep in range(1, args.epochs+1):
-        model.train(); losses = []; seen = 0
-        for x, m, _ in tqdm(dl_tr, desc=f"OVSeg Train {ep}/{args.epochs}", leave=False):
+        model.train(); losses = []
+        loss_sum = 0.0
+
+        steps_total = max(1, len(dl_tr))
+        checks = max(1, int(getattr(args, "val_checks_per_epoch", 1)))
+        check_points = {steps_total}
+        if len(dl_tr) > 0 and checks > 1:
+            for idx in range(1, checks):
+                step = math.ceil(idx * len(dl_tr) / checks)
+                check_points.add(min(steps_total, max(1, step)))
+        next_checks = iter(sorted(check_points))
+        next_check = next(next_checks, None)
+        last_val = None
+
+        train_pbar = tqdm(dl_tr, desc=f"OVSeg Train {ep}/{args.epochs}", leave=False)
+        for step, (x, m, _) in enumerate(train_pbar, start=1):
             x = x.to(device); m = m.to(device).long()
             out = model(x)["out"]
             if out.shape[-2:] != m.shape[-2:]:
                 out = F.interpolate(out, size=m.shape[-2:], mode="bilinear", align_corners=False)
             loss = criterion(out, m)
             opt.zero_grad(); loss.backward(); opt.step()
-            losses.append(float(loss.item())); seen += x.size(0)
+            current_loss = float(loss.item())
+            losses.append(current_loss)
+            loss_sum += current_loss
+            train_pbar.set_postfix({"loss": current_loss, "loss_avg": loss_sum / len(losses)})
+
+            while next_check is not None and step >= next_check:
+                val_loss, m_val, K = evaluate_segmentation_full(
+                    model,
+                    dl_va,
+                    device,
+                    criterion,
+                    desc=f"OVSeg Val {ep}/{args.epochs} @{step}/{steps_total}",
+                    leave=False,
+                )
+                print(
+                    f"[ep {ep:03d}] val@{step}/{steps_total}: "
+                    f"loss={val_loss:.4f}  pixel_acc={m_val['pixel_acc']:.4f}  "
+                    f"mIoU={m_val['miou']:.4f}  F1={m_val['f1_macro']:.4f}"
+                )
+                last_val = (val_loss, m_val, K)
+                next_check = next(next_checks, None)
+        train_pbar.close()
+
+        if len(dl_tr) == 0:
+            val_loss, m_val, K = evaluate_segmentation_full(
+                model,
+                dl_va,
+                device,
+                criterion,
+                desc=f"OVSeg Val {ep}/{args.epochs} @0/{steps_total}",
+                leave=False,
+            )
+            print(
+                f"[ep {ep:03d}] val@0/{steps_total}: "
+                f"loss={val_loss:.4f}  pixel_acc={m_val['pixel_acc']:.4f}  "
+                f"mIoU={m_val['miou']:.4f}  F1={m_val['f1_macro']:.4f}"
+            )
+            last_val = (val_loss, m_val, K)
+
         avg_loss = (sum(losses) / max(1, len(losses)))
         print(f"[ep {ep:03d}] train_loss={avg_loss:.4f}")
 
-        # validation metrics
-        val_loss, m, K = evaluate_segmentation_full(model, dl_va, device, criterion)
-        print(f"[ep {ep:03d}] val: loss={val_loss:.4f}  pixel_acc={m['pixel_acc']:.4f}  mIoU={m['miou']:.4f}  F1={m['f1_macro']:.4f}")
+        if last_val is None:
+            val_loss, m_val, K = evaluate_segmentation_full(
+                model,
+                dl_va,
+                device,
+                criterion,
+                desc=f"OVSeg Val {ep}/{args.epochs} @{steps_total}/{steps_total}",
+                leave=False,
+            )
+            print(
+                f"[ep {ep:03d}] val@{steps_total}/{steps_total}: "
+                f"loss={val_loss:.4f}  pixel_acc={m_val['pixel_acc']:.4f}  "
+                f"mIoU={m_val['miou']:.4f}  F1={m_val['f1_macro']:.4f}"
+            )
+        else:
+            val_loss, m_val, K = last_val
 
         # optional train metrics on a fraction
         frac = max(0.0, min(1.0, getattr(args, "train_miou_ratio", 0.0)))
@@ -558,8 +1104,8 @@ def ovseg_train(args, device):
             print(f"[ep {ep:03d}] train[{tag}]: mIoU={mt['miou']:.4f}  F1={mt['f1_macro']:.4f}")
 
         extra_payload = {"classes": seg_index.classes}
-        ckpt_mgr_train.save(model.state_dict(), ep, avg_loss, m, extra=extra_payload)
-        ckpt_mgr_val.save(model.state_dict(), ep, m['miou'], m, extra=extra_payload)
+        ckpt_mgr_train.save(model.state_dict(), ep, avg_loss, m_val, extra=extra_payload)
+        ckpt_mgr_val.save(model.state_dict(), ep, m_val['miou'], m_val, extra=extra_payload)
 
         if ep in vis_epochs:
             has_val_samples = len(dl_va) > 0
@@ -606,13 +1152,7 @@ def ovseg_train(args, device):
                             acc = probs[i].detach().cpu().numpy()
 
                             raw_path = paths[i]
-                            if args.images_dir and os.path.exists(args.images_dir):
-                                try:
-                                    rel = os.path.relpath(raw_path, args.images_dir)
-                                except ValueError:
-                                    rel = raw_path
-                            else:
-                                rel = raw_path
+                            rel = _resolve_rel_path(raw_path, val_meta, val_root_hint)
                             safe_base = re.sub(r"[^0-9a-zA-Z._/-]", "_", rel)
                             safe_base = safe_base.replace(os.sep, "__").replace("/", "__")
                             safe_base = safe_base.replace("..", "__")
@@ -644,13 +1184,7 @@ def ovseg_train(args, device):
 
                         for i in range(x_tr_vis.size(0)):
                             raw_path = paths_tr[i]
-                            if args.images_dir and os.path.exists(args.images_dir):
-                                try:
-                                    rel = os.path.relpath(raw_path, args.images_dir)
-                                except ValueError:
-                                    rel = raw_path
-                            else:
-                                rel = raw_path
+                            rel = _resolve_rel_path(raw_path, train_meta, train_root_hint)
                             safe_base = re.sub(r"[^0-9a-zA-Z._/-]", "_", rel)
                             safe_base = safe_base.replace(os.sep, "__").replace("/", "__")
                             safe_base = safe_base.replace("..", "__")
@@ -689,8 +1223,15 @@ def ovseg_infer(args, device):
     seg_index = None
     if class_names is None:
         try:
-            seg_index = SegIndex(args.images_dir if args.images_dir else args.test_dir,
-                                 args.coco_json, class_aliases=args.class_aliases)
+            if args.tiles_train or args.tiles_val:
+                roots = args.tiles_train or args.tiles_val
+                seg_index = MaskTilesIndex(roots, class_aliases=args.class_aliases)
+            else:
+                seg_index = SegIndex(
+                    args.images_dir if args.images_dir else args.test_dir,
+                    args.coco_json,
+                    class_aliases=args.class_aliases,
+                )
             class_names = seg_index.classes
             num_classes = seg_index.num_classes
         except AssertionError as exc:
@@ -800,6 +1341,10 @@ def ovseg_infer(args, device):
 
 def main():
     args = parse_args()
+    if args.mode == "lposs_train" or (args.mode == "ovseg_train" and getattr(args, "config", "")):
+        lposs_train(args)
+        return
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if args.mode == "ovseg_train":

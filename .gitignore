@@ -7,3 +7,11 @@ results/*
 !/datasets/__init__.py
 !/datasets/*.md
 !/datasets/aliases.json
+lposs/datasets/
+lposs/data/
+*.pth
+*.csv
+*.json
+tiles/*
+__pycache__/
+*.pyc

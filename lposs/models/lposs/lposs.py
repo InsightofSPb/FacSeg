@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -16,7 +18,13 @@ class LPOSS(nn.Module):
         super(LPOSS, self).__init__()
 
         # ==== build MaskCLIP backbone =====
-        maskclip_cfg = OmegaConf.load(f"configs/{clip_backbone}.yaml")
+        config_root = Path(__file__).resolve().parents[2] / "configs"
+        maskclip_cfg_path = config_root / f"{clip_backbone}.yaml"
+        if not maskclip_cfg_path.is_file():
+            raise FileNotFoundError(
+                f"MaskCLIP config '{maskclip_cfg_path}' not found."
+            )
+        maskclip_cfg = OmegaConf.load(maskclip_cfg_path)
         self.clip_backbone = build_model(maskclip_cfg["model"], class_names=class_names)
         for param in self.clip_backbone.parameters():
             param.requires_grad = False

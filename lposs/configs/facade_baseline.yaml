@@ -1,0 +1,141 @@
+_base_: "default.yaml"
+defaults:
+  - _self_
+
+seed: 42
+model_name: FacadeLPOSS-baseline
+output: "./outputs/facade_baseline"
+
+model:
+  type: FacadeLPOSS
+  clip_backbone: maskclip
+  vit_arch: vit_base
+  vit_patch_size: 16
+  enc_type_feats: "v"
+  trainable_decode_head: true
+  unfreeze_clip_backbone: false
+  decode_head_dropout: 0.2
+  gradual_unfreeze:
+    stages:
+      - epoch: 1
+        patterns:
+          - "backbone.visual.ln_post*"
+          - "backbone.visual.transformer.resblocks.11*"
+      - epoch: 4
+        patterns:
+          - "backbone.visual.transformer.resblocks.10*"
+      - epoch: 7
+        patterns:
+          - "backbone.visual.proj*"
+  lora:
+    enabled: true
+    rank: 4
+    alpha: 8
+    dropout: 0.1
+    target_modules:
+      - "backbone.visual.transformer.resblocks.10.mlp.c_fc"
+      - "backbone.visual.transformer.resblocks.10.mlp.c_proj"
+      - "backbone.visual.transformer.resblocks.11.mlp.c_fc"
+      - "backbone.visual.transformer.resblocks.11.mlp.c_proj"
+      - "decode_head.proj"
+  prompt_templates:
+    - "a detailed photo of {} on a building facade"
+    - "close-up view showing {} on masonry"
+prompt_descriptions:
+  background:
+    - "Intact surface with no defects: no cracks, spalling, moisture stains, efflorescence, corrosion, repairs, or text/images."
+    - "Uniform texture and color; masonry joints and normal panel seams are fine if undamaged."
+    - "Exclude: shadows, glare, reflections, camera dirt, leaves/wires, people, vehicles."
+
+  CRACK:
+    - "Linear material separation: thin or wide; vertical, horizontal, diagonal, or stepped."
+    - "Often jagged edges, local depth/shadow; can cut through plaster, brick, stone."
+    - "Exclude: masonry joints/panel seams, decorative grooves, tile edges, cables/pipes and their shadows."
+
+  SPALLING:
+    - "Material loss/flake-off of the primary wall layer (plaster, concrete, brick); substrate, inner material or different layer visible."
+    - "Irregular torn edges with depth offset; brick/stone or rebar may be exposed."
+    - "Different from MISSING_ELEMENT: this affects flat/base wall surfaces, not decorative parts."
+
+  DELAMINATION:
+    - "Subsurface debonding: areas with different tone/bubbling that sound hollow; precursor to spalling."
+    - "Looks like dull/darker or lighter patches with soft boundaries; may resemble mildew."
+    - "Exclude: WATER_STAIN (distinct flow streaks). Focus here is internal swelling, not surface residue."
+
+  MISSING_ELEMENT:
+    - "Loss of fragments from architectural/decorative elements: cornice, capital, statue, relief, column, rosette, etc."
+    - "Fracture edges on a shaped decorative form; missing piece creates an atypical cavity."
+    - "Different from SPALLING: refers to decor/element, not the flat wall/base coating."
+
+  WATER_STAIN:
+    - "Water marks: streaks, dark or light discoloration, often below sills, cornices, downspouts."
+    - "Gravity-driven flow direction downward; can overlay ornament without destroying it."
+    - "Exclude: DELAMINATION (internal swelling without typical runoff streaks)."
+
+  EFFLORESCENCE:
+    - "White crystalline salt deposits on the surface, often elongated along or around mortar joints."
+    - "Powdery/crystalline texture; typically on brick, stone, concrete."
+    - "Exclude: white paint, plaster dust, limewash, sun bleaching."
+
+  CORROSION:
+    - "Rust on metal or rusty streaks from anchors/fasteners/hidden reinforcement."
+    - "Orange-brown spots/lines near metal parts, grilles, balconies."
+    - "Exclude: ochre-colored paint, intentional patina without signs of damage."
+
+  ORNAMENT_INTACT:
+    - "Decorative element (ornament/molding/sculpture) is present and undamaged."
+    - "May co-exist with WATER_STAIN, EFFLORESCENCE, or CORROSION nearby; the element itself remains intact."
+    - "Not a defect—context class indicating presence and integrity of decor."
+
+  REPAIRS:
+    - "Visible repairs: plaster/brick patches with different texture/color, fresh joints, repaint zones with sharp boundaries."
+    - "Temporary coverings/netting/tarp on facade (e.g., green construction mesh)."
+    - "Exclude: uniform full-wall repaint without local boundaries."
+
+  TEXT_OR_IMAGES:
+    - "Any symbols/images placed on the facade: signs, house numbers, plaques, banners, graffiti, ads, road signs."
+    - "Not part of the building material or architectural decor."
+    - "Exclude: inherent material patterns (brick/stone texture), embossed plaster as finish."
+
+  optimisation:
+    lr: 3.0e-5
+    weight_decay: 5.0e-4
+    ignore_index: 255
+    scheduler:
+      type: cosine
+      min_lr: 1.0e-6
+      warmup_epochs: 2
+      t_max: ${training.max_epochs}
+
+alpha: 0.95
+gamma: 3.0
+k: 400
+sigma: 0.01
+pix_dist_pow: 1.0
+pixel_refine: true
+tau: 0.01
+r: 13
+
+training:
+  dataset:
+    config: segmentation/configs/_base_/datasets/facade_damage.py
+    data_root: ${oc.env:FACADE_DATA_ROOT, ./data/facade_damage}
+    classes: null
+    repeat_times: 1
+    tile_mode: true
+    recursive: true
+  samples_per_gpu: 1
+  val_samples_per_gpu: 1
+  workers_per_gpu: 2
+  max_epochs: 50
+  val_interval: 1
+  log_interval: 1
+  checkpoint_dir: ${output}/checkpoints
+  confusion_dir: ${output}/confusion_matrices
+
+evaluate:
+  task:
+    - facade_damage
+  facade_damage:
+    config: segmentation/configs/_base_/datasets/facade_damage.py
+    data_root: ${training.dataset.data_root}
