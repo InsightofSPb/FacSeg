@@ -5,10 +5,23 @@ from __future__ import annotations
 import json
 import random
 import shutil
+import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
+
+
+# When this helper is imported from standalone scripts (``python lposs/tools/...``)
+# Python initialises ``sys.path`` with the helper's directory (``.../lposs/tools``)
+# but not the repository root.  Importing the shared ``datasets`` package would then
+# resolve to any globally installed ``datasets`` module (for example HuggingFace's
+# package) instead of the project's own implementation.  To make the helper robust
+# in both ``pip install -e`` and ad-hoc execution scenarios, we explicitly insert
+# the repo root ahead of any third-party entries.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from datasets.datasets import MaskTilesIndex
 
