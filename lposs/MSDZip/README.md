@@ -17,6 +17,34 @@ python compress.py enwik6 enwik6.mz --prefix enwik6
 python decompress.py enwik6.mz enwik6.mz.out --prefix enwik6
 ```
 
+### Advanced options
+
+The compressor and decompressor now expose several flags that make it easier
+to run controlled experiments and analyse the output quality:
+
+* `--mode adaptive|static` toggles between the original adaptive training
+  behaviour (`adaptive`, default) and a frozen evaluation-only mode (`static`).
+  Make sure that the encoder and decoder use the same value.
+* `--weights <path>` loads a checkpoint containing model weights before
+  compression/decompression starts. This can be used to compare the baseline
+  MSDZip model, a fine-tuned variant trained with `lposs_train`, or any other
+  checkpoint.
+* `--device` lets you force a particular PyTorch device (for example `cpu`).
+* `--metrics-path <path>` stores a per-symbol bitrate trace (NumPy `.npz`)
+  which can be inspected with `analyze_metrics.py`. Combine this with
+  `--metrics-topk` to log the worst-performing indices directly to stdout.
+
+Use the helper script below to visualise the metric trace and highlight the
+regions that are hard to compress:
+
+```
+python analyze_metrics.py --metrics <trace.npz> --resolution 512x512 \
+    --heatmap heatmap.pgm --mask hot-spots.pgm --threshold 5.0 --topk 20
+```
+The script will emit basic statistics, optionally save a heatmap or binary
+mask (using the PGM format so no external dependencies are required), and
+report the coordinates of the locations with the highest bitrate.
+
 ## Stepwise-parallel
 ```
 # Compression
