@@ -6,7 +6,7 @@ import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING, Union
 
 if TYPE_CHECKING:  # pragma: no cover - typing aid
     import numpy as np
@@ -274,6 +274,18 @@ def _resolve_focus_classes(
     return resolved_labels, resolved_indices
 
 
+def _collect_named_indices(
+    class_names: Sequence[str],
+    names: Iterable[str],
+) -> Tuple[int, ...]:
+    lookup: Dict[str, int] = {}
+    for idx, label in enumerate(class_names):
+        for part in label.split(";"):
+            lookup[part.strip().upper()] = idx
+    indices = sorted({lookup[name.upper()] for name in names if name.upper() in lookup})
+    return tuple(indices)
+
+
 def _gather_samples(
     loader,
     indices: Optional[Sequence[int]],
@@ -424,10 +436,14 @@ def _compute_gradcam(
     image: "torch.Tensor",
     feat: "torch.Tensor",
     logits: "torch.Tensor",
-    class_idx: int,
+    class_indices: Union[int, Sequence[int]],
 ) -> "np.ndarray":
     model.zero_grad()
-    score = logits[:, class_idx].mean()
+    if isinstance(class_indices, int):
+        target_logits = logits[:, class_indices]
+    else:
+        target_logits = logits[:, list(class_indices)]
+    score = target_logits.mean()
     grads = torch.autograd.grad(score, feat, retain_graph=True)[0]
     weights = grads.mean(dim=(2, 3), keepdim=True)
     cam = torch.relu((weights * feat).sum(dim=1, keepdim=True))
@@ -559,6 +575,17 @@ def main() -> None:
     loader = loaders[args.split]
     class_names, palette = _extract_dataset_metadata(train_loader.dataset)
     focus_labels, focus_indices = _resolve_focus_classes(args.focus_classes, class_names)
+    damage_indices = _collect_named_indices(class_names, FacadeMetricLogger.DAMAGE_CLASSES)
+    damage_plus_indices = _collect_named_indices(
+        class_names, FacadeMetricLogger.DAMAGE_CLASSES | FacadeMetricLogger.DAMAGE_PLUS_EXTRA
+    )
+    gradcam_targets: List[Tuple[str, Tuple[int, ...]]] = [
+        (class_names[idx], (idx,)) for idx in range(len(class_names))
+    ]
+    if damage_indices:
+        gradcam_targets.append(("damage", damage_indices))
+    if damage_plus_indices:
+        gradcam_targets.append(("damagePlus", damage_plus_indices))
     palette_arr = np.asarray(palette, dtype=np.uint8)
 
     img_norm_cfg = mmseg_cfg.get("img_norm_cfg", {})
@@ -661,8 +688,14 @@ def main() -> None:
                     image_tensor_gc.requires_grad_(True)
                     _, feat_gc = model.clip_backbone(image_tensor_gc, return_feat=True)
                     logits_gc = _class_logits_from_feat(model, feat_gc)
-                    for label_name, class_idx in zip(focus_labels, focus_indices):
-                        heatmap = _compute_gradcam(model, image_tensor_gc, feat_gc, logits_gc, class_idx)
+                    for label_name, indices in gradcam_targets:
+                        heatmap = _compute_gradcam(
+                            model,
+                            image_tensor_gc,
+                            feat_gc,
+                            logits_gc,
+                            indices if len(indices) > 1 else indices[0],
+                        )
                         heat_path = sample_dir / f"{label}_gradcam_{_sanitize_name(label_name)}.png"
                         _save_heatmap_overlay(
                             image_np,
