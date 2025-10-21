@@ -359,6 +359,66 @@ def _class_logits_from_feat(model, feat: "torch.Tensor") -> "torch.Tensor":
     return F.conv2d(feat, embeddings[:, :, None, None])
 
 
+def _forward_decode_head_features(
+    model,
+    image: "torch.Tensor",
+) -> "torch.Tensor":
+    """Run the decode head while keeping gradients w.r.t. the input image.
+
+    Some MaskCLIP variants decorate ``extract_feat`` with ``torch.no_grad`` which
+    detaches the autograd graph when calling ``model.clip_backbone`` directly.
+    Integrated Gradients needs the gradient to flow back to the input image, so
+    we try to call the undecorated implementation when available.
+
+    Args:
+        model: The high-level model that exposes ``clip_backbone``.
+        image: A 4D tensor (N, C, H, W) whose gradients should be tracked.
+
+    Returns:
+        The projected feature map produced by the decode head.
+    """
+
+    clip_backbone = getattr(model, "clip_backbone", None)
+    if clip_backbone is None:
+        raise AttributeError("Model does not expose a clip_backbone attribute")
+
+    extract_feat = getattr(clip_backbone, "extract_feat", None)
+    decode_head = getattr(clip_backbone, "decode_head", None)
+    clip_transform = getattr(clip_backbone, "clip_T", None)
+
+    if (
+        extract_feat is not None
+        and hasattr(extract_feat, "__wrapped__")
+        and decode_head is not None
+        and clip_transform is not None
+    ):
+        raw_extract = extract_feat.__wrapped__
+        normalised = clip_transform(image)
+        features = raw_extract(clip_backbone, normalised)
+        try:
+            outputs = decode_head(features, return_feat=True)
+        except TypeError:
+            outputs = decode_head(features)
+        if isinstance(outputs, tuple) and len(outputs) == 2:
+            _, feat = outputs
+        elif isinstance(outputs, tuple) and outputs:
+            feat = outputs[-1]
+        elif isinstance(outputs, torch.Tensor):
+            feat = outputs
+        else:
+            raise RuntimeError(
+                "Decode head did not return feature maps required for attribution"
+            )
+        return feat
+
+    outputs = clip_backbone(image, return_feat=True)
+    if isinstance(outputs, tuple) and outputs:
+        return outputs[-1]
+    raise RuntimeError(
+        "clip_backbone did not return feature maps required for attribution"
+    )
+
+
 def _compute_gradcam(
     model,
     image: "torch.Tensor",
@@ -385,20 +445,27 @@ def _compute_integrated_gradients(
     class_idx: int,
     steps: int,
 ) -> "np.ndarray":
-    model.zero_grad()
+    model.zero_grad(set_to_none=True)
     baseline = torch.zeros_like(image)
     scaled_inputs = torch.linspace(0.0, 1.0, steps + 1, device=image.device, dtype=image.dtype)
     total_grad = torch.zeros_like(image)
 
-    for alpha in scaled_inputs:
-        interpolated = baseline + alpha * (image - baseline)
-        interpolated = interpolated.unsqueeze(0)
-        interpolated.requires_grad_(True)
-        seg_probs, feat = model.clip_backbone(interpolated, return_feat=True)
-        logits = _class_logits_from_feat(model, feat)
-        score = logits[:, class_idx].mean()
-        grad = torch.autograd.grad(score, interpolated)[0]
-        total_grad += grad.squeeze(0)
+    with torch.enable_grad():
+        for alpha in scaled_inputs:
+            interpolated = baseline + alpha * (image - baseline)
+            interpolated = interpolated.unsqueeze(0)
+            interpolated.requires_grad_(True)
+            feat = _forward_decode_head_features(model, interpolated)
+            logits = _class_logits_from_feat(model, feat)
+            score = logits[:, class_idx].mean()
+            try:
+                grad = torch.autograd.grad(score, interpolated, retain_graph=False)[0]
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    "Integrated Gradients requires the model to propagate gradients to the input. "
+                    "Ensure the backbone does not disable autograd or drop integrated gradients from --methods."
+                ) from exc
+            total_grad += grad.squeeze(0)
 
     avg_grad = total_grad / (steps + 1)
     attribution = (image - baseline) * avg_grad
@@ -569,7 +636,22 @@ def main() -> None:
                 if target is not None:
                     target_path = sample_dir / "ground_truth.png"
                     if not target_path.exists():
-                        colour_mask = palette_arr[target.numpy().astype(np.int64)]
+                        if hasattr(target, "detach"):
+                            target_np = target.detach().cpu().numpy()
+                        else:
+                            target_np = np.asarray(target)
+                        target_np = target_np.astype(np.int64, copy=False)
+                        if target_np.ndim == 0:
+                            raise ValueError(
+                                "Expected target mask to have at least one spatial dimension, "
+                                f"got shape {target_np.shape}"
+                            )
+                        if target_np.ndim == 1:
+                            mask_np = target_np.reshape(1, target_np.shape[0])
+                        else:
+                            height, width = target_np.shape[-2:]
+                            mask_np = target_np.reshape(height, width)
+                        colour_mask = palette_arr[mask_np]
                         Image.fromarray(colour_mask).save(target_path)
 
                 methods = {m.lower() for m in args.methods}
