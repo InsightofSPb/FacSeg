@@ -71,7 +71,8 @@ def resolve_device(args: argparse.Namespace) -> torch.device:
 
 
 def compress(args, temp_file, series, train_data, final, device: torch.device,
-             metrics: Optional[CompressionMetricsRecorder] = None, series_offset: int = 0):
+             metrics: Optional[CompressionMetricsRecorder] = None, series_offset: int = 0,
+             checkpoint: Optional[dict] = None):
     bs, ts = args.batchsize, args.timesteps
     f = [open(temp_file + '.' + str(i), 'wb') for i in range(bs)]  # 创建batchsize个空文件
 
@@ -97,10 +98,20 @@ def compress(args, temp_file, series, train_data, final, device: torch.device,
                                       ffn_dim=args.ffn_dim, vocab_size=args.vocab_size,
                                       vocab_dim=args.vocab_dim, timesteps=ts).to(device)  # 没有用到vocab_dim
 
-    if args.weights:
+    state = None
+    source_key = None
+    stripped = False
+    if checkpoint is not None:
+        state = checkpoint.get('state_dict')
+        source_key = checkpoint.get('source_key')
+        stripped = checkpoint.get('stripped', False)
+    elif args.weights:
         logging.info('Loading pretrained weights from %s', args.weights)
-        state, source_key, stripped = load_checkpoint_state(args.weights, device)
-        if source_key != 'root':
+        state, source_key, stripped, _, _ = load_checkpoint_state(args.weights, device)
+    if state is not None:
+        if args.weights:
+            logging.info('Applying checkpoint weights from %s', args.weights)
+        if source_key and source_key != 'root':
             logging.info("Extracted state_dict from checkpoint key '%s'", source_key)
         if stripped:
             logging.info("Removed 'module.' prefix from checkpoint parameters")
@@ -196,6 +207,8 @@ def main(args):
         torch.cuda.manual_seed_all(args.seed)
     logging.info('Using device %s', device)
 
+    checkpoint_bundle = prepare_state_from_weights(args, device, logger=logging.getLogger(__name__))
+
     if args.layers is None:
         args.layers = int(math.log2(args.timesteps) + 1)
 
@@ -239,12 +252,12 @@ def main(args):
         metrics_recorder = CompressionMetricsRecorder(len(series), args.vocab_size)
 
     if total_num % args.batchsize == 0:  # 正好够整数个bs
-        compress(args, temp_file, series, train_data, None, device, metrics_recorder, series_offset=0)
+        compress(args, temp_file, series, train_data, None, device, metrics_recorder, series_offset=0, checkpoint=checkpoint_bundle)
     else:  # 不够整数个batchsize
         ini_num = total_num // args.batchsize * args.batchsize  # 只压缩整数批的数据，整数个批里面有l+timesteps个元素
         # print(1, ini_num+args.timesteps)
         compress(args, temp_file, series[:ini_num + args.timesteps], train_data[:ini_num],
-                 series[ini_num:], device, metrics_recorder, series_offset=0)
+                 series[ini_num:], device, metrics_recorder, series_offset=0, checkpoint=checkpoint_bundle)
 
     # Combined compressed results
     f = open(args.output, 'wb')

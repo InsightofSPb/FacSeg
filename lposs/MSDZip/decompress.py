@@ -4,6 +4,8 @@ import sys
 import time
 import logging
 import argparse
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
 import os
@@ -61,7 +63,7 @@ def resolve_device(args: argparse.Namespace) -> torch.device:
     logging.warning('CUDA was requested but is not available. Falling back to CPU.')
     return torch.device('cpu')
 
-def decompress(args, temp_file, info, last, device: torch.device):
+def decompress(args, temp_file, info, last, device: torch.device, checkpoint: Optional[dict] = None):
     bs, ts = args.batchsize, args.timesteps
     len_series, vocab_size = info[args.sub_prefix], args.vocab_size
 
@@ -89,10 +91,20 @@ def decompress(args, temp_file, info, last, device: torch.device):
                                       ffn_dim=args.ffn_dim, vocab_size=vocab_size, vocab_dim=args.vocab_dim,
                                       timesteps=ts).to(device)   #没有用到vocab_dim
 
-    if args.weights:
+    state = None
+    source_key = None
+    stripped = False
+    if checkpoint is not None:
+        state = checkpoint.get('state_dict')
+        source_key = checkpoint.get('source_key')
+        stripped = checkpoint.get('stripped', False)
+    elif args.weights:
         logging.info('Loading pretrained weights from %s', args.weights)
-        state, source_key, stripped = load_checkpoint_state(args.weights, device)
-        if source_key != 'root':
+        state, source_key, stripped, _, _ = load_checkpoint_state(args.weights, device)
+    if state is not None:
+        if args.weights:
+            logging.info('Applying checkpoint weights from %s', args.weights)
+        if source_key and source_key != 'root':
             logging.info("Extracted state_dict from checkpoint key '%s'", source_key)
         if stripped:
             logging.info("Removed 'module.' prefix from checkpoint parameters")
@@ -178,6 +190,8 @@ def main(args):
         torch.cuda.manual_seed_all(args.seed)
     logging.info('Using device %s', device)
 
+    checkpoint_bundle = prepare_state_from_weights(args, device, logger=logging.getLogger(__name__))
+
     if args.layers is None:
         args.layers = int(math.log2(args.timesteps) + 1)
 
@@ -218,10 +232,10 @@ def main(args):
     f.close()
 
     if (params[args.sub_prefix] - args.timesteps) % args.batchsize == 0:
-        decompress(args, temp_file, params, 0, device)
+        decompress(args, temp_file, params, 0, device, checkpoint=checkpoint_bundle)
     else:
         last_length = (params[args.sub_prefix] - args.timesteps) % args.batchsize + args.timesteps
-        decompress(args, temp_file, params, last_length, device)
+        decompress(args, temp_file, params, last_length, device, checkpoint=checkpoint_bundle)
     # remove temp files
     shutil.rmtree(args.tempdir)
     t2 = time.time()
