@@ -43,59 +43,49 @@ model:
     - "close-up view showing {} on masonry"
 prompt_descriptions:
   background:
-    - "Intact surface with no defects: no cracks, spalling, moisture stains, efflorescence, corrosion, repairs, or text/images."
-    - "Uniform texture and color; masonry joints and normal panel seams are fine if undamaged."
-    - "Exclude: shadows, glare, reflections, camera dirt, leaves/wires, people, vehicles."
+    - "Plain surface with nothing special going on."
+    - "Even look and color; normal joints or seams are fine."
+    - "Ignore random stuff like shadows or passing objects."
 
   CRACK:
-    - "Linear material separation: thin or wide; vertical, horizontal, diagonal, or stepped."
-    - "Often jagged edges, local depth/shadow; can cut through plaster, brick, stone."
-    - "Exclude: masonry joints/panel seams, decorative grooves, tile edges, cables/pipes and their shadows."
+    - "A line where the surface split; thin or wide, any direction."
+    - "Not regular seams or neat decorative lines."
 
   SPALLING:
-    - "Material loss/flake-off of the primary wall layer (plaster, concrete, brick); substrate, inner material or different layer visible."
-    - "Irregular torn edges with depth offset; brick/stone or rebar may be exposed."
-    - "Different from MISSING_ELEMENT: this affects flat/base wall surfaces, not decorative parts."
+    - "Outer layer has flaked off, showing what's beneath."
+    - "Different from MISSING_ELEMENT: happens on the flat wall, not fancy pieces."
 
   DELAMINATION:
-    - "Subsurface debonding: areas with different tone/bubbling that sound hollow; precursor to spalling."
-    - "Looks like dull/darker or lighter patches with soft boundaries; may resemble mildew."
-    - "Exclude: WATER_STAIN (distinct flow streaks). Focus here is internal swelling, not surface residue."
+    - "Soft-edged patches that seem swollen or a different tone."
+    - "Not the long streaks from running water."
 
   MISSING_ELEMENT:
-    - "Loss of fragments from architectural/decorative elements: cornice, capital, statue, relief, column, rosette, etc."
-    - "Fracture edges on a shaped decorative form; missing piece creates an atypical cavity."
-    - "Different from SPALLING: refers to decor/element, not the flat wall/base coating."
+    - "A piece of a decorative detail is gone, leaving a weird gap."
+    - "Not the flat wall peeling."
 
   WATER_STAIN:
-    - "Water marks: streaks, dark or light discoloration, often below sills, cornices, downspouts."
-    - "Gravity-driven flow direction downward; can overlay ornament without destroying it."
-    - "Exclude: DELAMINATION (internal swelling without typical runoff streaks)."
+    - "Streaky marks from water running down, often under ledges or pipes."
+    - "Not the puffy-looking patches."
 
   EFFLORESCENCE:
-    - "White crystalline salt deposits on the surface, often elongated along or around mortar joints."
-    - "Powdery/crystalline texture; typically on brick, stone, concrete."
-    - "Exclude: white paint, plaster dust, limewash, sun bleaching."
+    - "White, powdery crust on the surface, common on brick or stone."
+    - "Not paint or simple dust."
 
   CORROSION:
-    - "Rust on metal or rusty streaks from anchors/fasteners/hidden reinforcement."
-    - "Orange-brown spots/lines near metal parts, grilles, balconies."
-    - "Exclude: ochre-colored paint, intentional patina without signs of damage."
+    - "Rusty spots or streaks around metal bits."
+    - "Not just brown paint or a deliberate aged look."
 
   ORNAMENT_INTACT:
-    - "Decorative element (ornament/molding/sculpture) is present and undamaged."
-    - "May co-exist with WATER_STAIN, EFFLORESCENCE, or CORROSION nearby; the element itself remains intact."
-    - "Not a defect—context class indicating presence and integrity of decor."
+    - "Decorative piece is present and looks fine."
+    - "Other issues nearby don’t mean this is damaged."
 
   REPAIRS:
-    - "Visible repairs: plaster/brick patches with different texture/color, fresh joints, repaint zones with sharp boundaries."
-    - "Temporary coverings/netting/tarp on facade (e.g., green construction mesh)."
-    - "Exclude: uniform full-wall repaint without local boundaries."
+    - "Patches or repainting that don’t match the rest; sometimes temporary covers."
+    - "Not a full, even repaint."
 
   TEXT_OR_IMAGES:
-    - "Any symbols/images placed on the facade: signs, house numbers, plaques, banners, graffiti, ads, road signs."
-    - "Not part of the building material or architectural decor."
-    - "Exclude: inherent material patterns (brick/stone texture), embossed plaster as finish."
+    - "Added stuff like signs, numbers, graffiti, ads."
+    - "Not the building’s own material pattern."
 
   optimisation:
     lr: 3.0e-5
