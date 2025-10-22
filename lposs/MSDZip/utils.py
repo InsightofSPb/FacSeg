@@ -3,6 +3,7 @@ import math
 import numpy as np
 import struct
 from collections import OrderedDict
+from collections.abc import Mapping, Sequence
 from typing import Any, Dict, Iterable, Iterator, Optional, Tuple
 
 import torch
@@ -48,11 +49,31 @@ def _collect_state_dict_candidates(
         yield path, OrderedDict(payload)
         return
 
+    mapping_items: Optional[Iterable[Tuple[Any, Any]]] = None
     if isinstance(payload, (dict, OrderedDict)):
-        for key, value in payload.items():
+        mapping_items = payload.items()
+    elif isinstance(payload, Mapping):
+        try:
+            mapping_items = payload.items()
+        except Exception:
+            mapping_items = None
+    else:
+        items = getattr(payload, "items", None)
+        if callable(items):
+            try:
+                mapping_items = items()
+            except Exception:
+                mapping_items = None
+
+    if mapping_items is not None:
+        for key, value in mapping_items:
             child_path = f"{path}.{key}" if path else str(key)
             yield from _collect_state_dict_candidates(value, path=child_path, _visited=_visited)
-    elif isinstance(payload, (list, tuple)):
+        return
+
+    if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes, bytearray)):
+        if isinstance(payload, (torch.Tensor, np.ndarray)):
+            return
         for index, value in enumerate(payload):
             child_path = f"{path}[{index}]"
             yield from _collect_state_dict_candidates(value, path=child_path, _visited=_visited)
