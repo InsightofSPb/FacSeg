@@ -107,7 +107,7 @@ def compress(args, temp_file, series, train_data, final, device: torch.device,
         stripped = checkpoint.get('stripped', False)
     elif args.weights:
         logging.info('Loading pretrained weights from %s', args.weights)
-        state, source_key, stripped, _ = load_checkpoint_state(args.weights, device)
+        state, source_key, stripped, _, _ = load_checkpoint_state(args.weights, device)
     if state is not None:
         if args.weights:
             logging.info('Applying checkpoint weights from %s', args.weights)
