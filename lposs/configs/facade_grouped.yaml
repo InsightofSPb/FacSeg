@@ -85,6 +85,7 @@ prompt_descriptions:
 
 training:
   dataset:
+    config: segmentation/configs/_base_/datasets/facade_damage.py
     classes:
       - background
       - DAMAGE
@@ -95,6 +96,7 @@ training:
 
 evaluate:
   facade_damage:
+    config: segmentation/configs/_base_/datasets/facade_damage.py
     classes:
       - background
       - DAMAGE

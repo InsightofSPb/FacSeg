@@ -17,6 +17,7 @@ from mmcv.parallel import DataContainer
 from mmcv.utils import ConfigDict
 from mmcv.runner import set_random_seed
 from mmseg.datasets import build_dataloader, build_dataset
+from omegaconf import DictConfig, ListConfig
 from torch.cuda.amp import GradScaler, autocast
 from tqdm.auto import tqdm
 
@@ -51,6 +52,25 @@ def _cfg_get(config, key: str, default=None):
         return getattr(config, key)
     return default
 
+def _normalize_sequence(value):
+    """Convert Hydra containers into plain Python tuples when possible."""
+
+    if value is None:
+        return None
+    if isinstance(value, ListConfig):
+        return tuple(value)
+    if isinstance(value, (list, tuple)):
+        return tuple(value)
+    if isinstance(value, DictConfig):  # pragma: no cover - defensive
+        raise TypeError(
+            "Expected a sequence of class names, but received a mapping."
+        )
+    if isinstance(value, str):
+        return (value,)
+    try:
+        return tuple(value)  # type: ignore[arg-type]
+    except TypeError:
+        return (value,)
 
 def _maybe_compile_model(model, compile_cfg, logger):
     """Compile *model* with ``torch.compile`` when requested and available."""
@@ -179,12 +199,18 @@ def _build_datasets(
             task_cfg = cfg.evaluate.get(task)
             if task_cfg and task_cfg.get("config"):
                 task_cfg["config"] = str(_resolve_config_path(task_cfg["config"]))
+            if task_cfg and task_cfg.get("classes"):
+                task_cfg["classes"] = _normalize_sequence(task_cfg["classes"])
+
     if dataset_cfg.get('data_root'):
         mmseg_cfg.data.train.data_root = dataset_cfg.data_root
         mmseg_cfg.data.val.data_root = dataset_cfg.data_root
     if dataset_cfg.get('classes'):
-        mmseg_cfg.data.train.classes = dataset_cfg.classes
-        mmseg_cfg.data.val.classes = dataset_cfg.classes
+        classes = _normalize_sequence(dataset_cfg.classes)
+        mmseg_cfg.data.train.classes = classes
+        mmseg_cfg.data.val.classes = classes
+        if hasattr(mmseg_cfg.data, "test"):
+            mmseg_cfg.data.test.classes = classes
 
     if tile_mode:
         default_norm = dict(mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
