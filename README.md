@@ -38,7 +38,7 @@ List classes for the DACL10K annotations and create a mapping template:
 
 ```bash
 python tools/dataset_label_summary.py /path/to/dacl10k/annotations \
-  --mapping-template dacl10k_label_mapping.json
+  --mapping-template tools/mappings/dacl10k_to_facseg.json
 ```
 
 Check labels in the Prova dataset (XML annotations):
@@ -72,6 +72,10 @@ classes live under `tools/mappings/`:
   dataset (bounding boxes) into the same FacSeg categories.
 * `portrait_spalling_cracks_values.json` &mdash; maps foreground pixel values in the
   `portrait_spalling_cracks` masks to the `SPALLING` category.
+* `facade_damage_values.json` &mdash; mirrors the pixel indices produced by
+  `convert_labelstudio_facade.py`, mapping them to the grouped FacSeg training
+  labels (`background`, `DAMAGE`, `WATER_STAIN`, `ORNAMENT_INTACT`, `REPAIRS`,
+  `TEXT_OR_IMAGES`). Use this file whenever you tile the exported masks.
 
 Pass these JSON files to the tiling helper via `--class-mapping` or
 `--mask-value-mapping` to reuse the agreed mapping without rebuilding it from
@@ -220,6 +224,31 @@ python tools/prepare_dataset_tiles.py \
   --overlay-dir /path/to/output/portrait_tiles/overlays
 ```
 
+### Example: Label Studio facade masks (mask-png)
+
+```bash
+python -m lposs.tools.convert_labelstudio_facade \
+  /path/to/labelstudio/result_coco.json \
+  /path/to/source/images \
+  --output-root /path/to/output/facade_damage \
+  --auto-split train=0.8 val=0.2 \
+  --seed 42
+
+python tools/prepare_dataset_tiles.py \
+  /path/to/output/facade_damage/images/train \
+  /path/to/output/facade_damage_tiles/train \
+  --dataset-type mask-png \
+  --masks-dir /path/to/output/facade_damage/masks/train \
+  --mask-value-mapping tools/mappings/facade_damage_values.json \
+  --tile-size 1024 1024 \
+  --stride 768 768 \
+  --pad \
+  --augmentations cutout cutmix cutblur \
+  --augmentations-per-tile 2 \
+  --overlay-dir /path/to/output/facade_damage_tiles/train/overlays \
+  --metadata /path/to/output/facade_damage_tiles/train/manifest.json
+```
+
 The script writes cropped images to `output_dir/images/`, masks to
 `output_dir/masks/`, and (optionally) overlays to the directory specified via
 `--overlay-dir`. A manifest with aggregated tile statistics can be written via
@@ -339,7 +368,7 @@ python tools/prepare_dacl10k_tiles.py \
   /path/to/dacl10k/images \
   /path/to/dacl10k/annotations \
   /path/to/output/tiles \
-  --class-mapping dacl10k_label_mapping.json \
+  --class-mapping tools/mappings/dacl10k_to_facseg.json \
   --tile-size 1024 1024 \
   --stride 768 768 \
   --min-coverage 0.01 \
