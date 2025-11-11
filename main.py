@@ -17,6 +17,7 @@ from utils.utils import *
 from datasets.datasets import *
 from model_zoo.models import *
 from lposs.tools.tiles_dataset import materialise_tiles_dataset
+from omegaconf import OmegaConf
 
 torch.set_float32_matmul_precision('high')
 
@@ -26,6 +27,9 @@ DEFAULT_COCO_JSON = "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/an
 DEFAULT_TEST_DIR = "/home/sasha/Facade_segmentation/datasets/Chernyshevskaya/test"
 DEFAULT_OUT_DIR = "/home/sasha/Facade_segmentation/results"
 DEFAULT_PREPARED_DIR = "/home/sasha/Facade_segmentation/prepared"
+
+DEFAULT_LPOSS_MAX_EPOCHS = 50
+DEFAULT_LPOSS_SEED = 42
 
 
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
@@ -186,6 +190,7 @@ def parse_args():
 def lposs_train(args):
     try:
         from hydra import compose, initialize_config_dir
+        from hydra.errors import ConfigCompositionException
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise RuntimeError(
             "Hydra is required for lposs_train mode. Please install hydra-core."
@@ -207,6 +212,8 @@ def lposs_train(args):
     config_dir_value = getattr(args, "config_dir", "") or ""
     raw_overrides = list(getattr(args, "hydra_overrides", []))
     explicit_data_root_override: Optional[str] = None
+    explicit_max_epochs_override: Optional[str] = None
+    explicit_seed_override: Optional[str] = None
 
     def _normalise_override_value(raw: str) -> str:
         text = str(raw).strip()
@@ -225,13 +232,18 @@ def lposs_train(args):
     overrides: list[str] = []
     for entry in raw_overrides:
         text = str(entry)
-        if "=" in text:
-            key, value = text.split("=", 1)
-            key = key.lstrip("+-~").strip()
-            if key == "training.dataset.data_root":
-                explicit_data_root_override = _normalise_override_value(value)
-                continue
-        overrides.append(entry)
+        overrides.append(text)
+        if "=" not in text:
+            continue
+        lhs, rhs = text.split("=", 1)
+        key = lhs.lstrip("+-~").strip()
+        norm_value = _normalise_override_value(rhs)
+        if key == "training.dataset.data_root":
+            explicit_data_root_override = norm_value
+        elif key == "training.max_epochs":
+            explicit_max_epochs_override = norm_value
+        elif key == "seed":
+            explicit_seed_override = norm_value
 
     def _has_override(overrides_list, key: str) -> bool:
         if key == "training.dataset.data_root" and explicit_data_root_override is not None:
@@ -240,7 +252,7 @@ def lposs_train(args):
             text = str(entry)
             if "=" not in text:
                 continue
-            lhs = text.split("=", 1)[0].lstrip("+-~")
+            lhs = text.split("=", 1)[0].lstrip("+-~").strip()
             if lhs == key:
                 return True
         return False
@@ -300,6 +312,7 @@ def lposs_train(args):
     if override_epochs:
         if not any(str(ov).split("=", 1)[0] == "training.max_epochs" for ov in overrides if "=" in ov):
             overrides.append(f"training.max_epochs={int(args.epochs)}")
+            explicit_max_epochs_override = str(int(args.epochs))
 
     dataset_summary = []
     dataset_result = None
@@ -347,6 +360,13 @@ def lposs_train(args):
             f"{explicit_data_root_override}"
         )
 
+    if explicit_data_root_override is not None:
+        os.environ["FACADE_DATA_ROOT"] = explicit_data_root_override
+        dataset_summary.append(
+            "[i] dataset root override (training.dataset.data_root): "
+            f"{explicit_data_root_override}"
+        )
+
     override_batch_size = any(
         arg == "--ovseg_batch_size" or arg.startswith("--ovseg_batch_size=")
         for arg in sys.argv[1:]
@@ -367,10 +387,6 @@ def lposs_train(args):
     print(f"[i] LPOSS config: {config_path}")
     for line in dataset_summary:
         print(line)
-    if overrides:
-        print("[i] Hydra overrides:")
-        for item in overrides:
-            print(f"    - {item}")
 
     sanity_flag = getattr(args, "lposs_sanity_check", True)
     sanity_limit_raw = getattr(args, "lposs_sanity_limit", 20)
@@ -387,8 +403,99 @@ def lposs_train(args):
     else:
         print("[i] LPOSS sanity check: disabled via flag")
 
-    with initialize_config_dir(config_dir=str(config_dir), version_base=None):
-        cfg = compose(config_name=config_name, overrides=overrides)
+    compose_overrides = list(overrides)
+    append_retry_keys: set[str] = set()
+    while True:
+        try:
+            with initialize_config_dir(config_dir=str(config_dir), version_base=None):
+                cfg = compose(config_name=config_name, overrides=compose_overrides)
+            break
+        except ConfigCompositionException as exc:
+            message = str(exc)
+            key_match = re.search(r"Could not override '([^']+)'", message)
+            failed_key = key_match.group(1) if key_match else None
+            if not failed_key or failed_key in append_retry_keys:
+                raise
+            replaced = False
+            for idx, entry in enumerate(compose_overrides):
+                text = str(entry)
+                if "=" not in text:
+                    continue
+                lhs, rhs = text.split("=", 1)
+                normalized_key = lhs.lstrip("+-~").strip()
+                if normalized_key == failed_key:
+                    compose_overrides[idx] = f"+{normalized_key}={rhs}"
+                    replaced = True
+                    break
+            if not replaced:
+                raise
+            append_retry_keys.add(failed_key)
+            print(
+                f"[i] Hydra override '{failed_key}' not present in config; retrying with '+{failed_key}'"
+            )
+            continue
+
+    overrides = compose_overrides
+    if overrides:
+        print("[i] Hydra overrides:")
+        for item in overrides:
+            print(f"    - {item}")
+
+    fallback_messages: list[str] = []
+
+    def _coerce_int(value: Optional[str], default: int) -> int:
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    struct_enabled = OmegaConf.is_struct(cfg)
+    OmegaConf.set_struct(cfg, False)
+
+    if OmegaConf.select(cfg, "seed") is None:
+        default_seed = _coerce_int(explicit_seed_override, DEFAULT_LPOSS_SEED)
+        OmegaConf.update(cfg, "seed", default_seed, force_add=True)
+        fallback_messages.append(
+            f"[i] Hydra config missing 'seed'; defaulting to {default_seed}"
+        )
+
+    if OmegaConf.select(cfg, "training.max_epochs") is None:
+        default_epochs = _coerce_int(explicit_max_epochs_override, DEFAULT_LPOSS_MAX_EPOCHS)
+        OmegaConf.update(cfg, "training.max_epochs", default_epochs, force_add=True)
+        fallback_messages.append(
+            f"[i] Hydra config missing 'training.max_epochs'; defaulting to {default_epochs}"
+        )
+
+    def _select_dataset_root() -> Optional[str]:
+        if explicit_data_root_override:
+            return explicit_data_root_override
+        if dataset_result is not None:
+            return str(dataset_result.root)
+        env_value = os.environ.get("FACADE_DATA_ROOT")
+        if env_value:
+            return env_value
+        return None
+
+    if OmegaConf.select(cfg, "training.dataset.data_root") is None:
+        dataset_root_value = _select_dataset_root()
+        if dataset_root_value:
+            OmegaConf.update(
+                cfg,
+                "training.dataset.data_root",
+                dataset_root_value,
+                force_add=True,
+            )
+            fallback_messages.append(
+                "[i] Hydra config missing 'training.dataset.data_root'; "
+                f"defaulting to {dataset_root_value}"
+            )
+
+    OmegaConf.set_struct(cfg, struct_enabled)
+
+    for note in fallback_messages:
+        print(note)
 
     lposs_train_impl(
         cfg,
