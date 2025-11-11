@@ -205,9 +205,37 @@ def lposs_train(args):
 
     config_value = getattr(args, "config", "") or ""
     config_dir_value = getattr(args, "config_dir", "") or ""
-    overrides = list(getattr(args, "hydra_overrides", []))
+    raw_overrides = list(getattr(args, "hydra_overrides", []))
+    explicit_data_root_override: Optional[str] = None
+
+    def _normalise_override_value(raw: str) -> str:
+        text = str(raw).strip()
+        if not text:
+            return text
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, str):
+            return parsed
+        if text[0] in {'"', "'"} and text[-1] == text[0]:
+            return text[1:-1]
+        return text
+
+    overrides: list[str] = []
+    for entry in raw_overrides:
+        text = str(entry)
+        if "=" in text:
+            key, value = text.split("=", 1)
+            key = key.lstrip("+-~").strip()
+            if key == "training.dataset.data_root":
+                explicit_data_root_override = _normalise_override_value(value)
+                continue
+        overrides.append(entry)
 
     def _has_override(overrides_list, key: str) -> bool:
+        if key == "training.dataset.data_root" and explicit_data_root_override is not None:
+            return True
         for entry in overrides_list:
             text = str(entry)
             if "=" not in text:
@@ -311,6 +339,13 @@ def lposs_train(args):
             dataset_summary.append(f"    {split_name} per-source:")
             for source, count in sorted(counter.items()):
                 dataset_summary.append(f"      - {source}: {count}")
+    
+    if explicit_data_root_override is not None:
+        os.environ["FACADE_DATA_ROOT"] = explicit_data_root_override
+        dataset_summary.append(
+            "[i] dataset root override (training.dataset.data_root): "
+            f"{explicit_data_root_override}"
+        )
 
     override_batch_size = any(
         arg == "--ovseg_batch_size" or arg.startswith("--ovseg_batch_size=")

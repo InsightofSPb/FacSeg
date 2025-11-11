@@ -19,26 +19,69 @@ prompt_descriptions:
     - "Plain surface with nothing special going on."
     - "Even look and color; normal joints or seams are fine."
     - "Ignore random stuff like shadows or passing objects."
+    - "It may also be windows, plain walls, cars, people."
+    - "Material texture (brick bond, stone veins, wood grain) ≠ damage."
+    - "Specular highlights, lens flare, vignetting, motion blur ≠ damage."
+    - "Reflections in glass (trees, people, text) are background."
+    - "Seasonal or loose stuff (leaves, snow, puddles, dust) → background."
+    - "Uniform manufacturing features (vent holes, tie-rod plates, drip edges) → background if intact."
+    - "If unsure and there is no change in surface profile (no chipping/bulge), prefer background or WATER_STAIN."
 
   DAMAGE:
-    - "Any structural deterioration like cracks, flaking, missing chunks, corrosion, or efflorescence."
-    - "Ignore neat joints or intact decorations; this is about material that is broken or crumbling."
+    - "Any structural deterioration like cracks, spalling, delamination, flaking, missing chunks and elements, corrosion, or efflorescence."
+    - "Ignore neat joints or intact decorations and cultural elements; this is about material that is broken or crumbling. Or material which will break soon."
+    - "Cracks: hairline to wide; jagged paths, branching, or map-crazing. Shadow inside the line is a good cue."
+    - "Spalling/flaking: surface layer lost; rough, crumbly, or scabby texture; sharp or irregular edges."
+    - "Delamination/bulging/blistering: swollen or hollow-sounding areas; raised patches suggest layers detaching."
+    - "Missing material: chips on corners, lost bricks/tiles/ornament parts, eroded mortar joints with voids."
+    - "Corrosion: rust bleed from steel elements or rebar; rusty streaks with pitting around anchors."
+    - "Efflorescence: thick crystalline/salty crusts that build up volume (if only thin discoloration → WATER_STAIN)."
+    - "Biogrowth that lifts paint/plaster or causes pitting → DAMAGE (mere discoloration without surface change → WATER_STAIN)."
+    - "Do NOT mark tidy expansion joints, grout lines, intentional scoring, or patterned perforations."
 
   WATER_STAIN:
-    - "Streaky marks from water running down, often under ledges or pipes."
-    - "Not the puffy-looking patches; those belong in DAMAGE."
+    - "Streaky marks from water running down, often under ledges or pipes. May be on decorations or under it."
+    - "Not the puffy-looking patches; those belong in DAMAGE. It is more about marks of rain or streams of water."
+    - "Typical colors: brown (rust/tannin), green (algae), MAINLY black/gray (mold/soot); surface profile remains flat."
+    - "Gravity-driven shapes: vertical streaks, tear-drop tails, drip lines, tide marks near sills and edges."
+    - "Often originates below gutters, downspouts, AC drains, window sills, or joints with poor sealant."
+    - "If flaking, blistering, or granular loss appears inside the stain → label that region as DAMAGE."
+    - "Paint fade from sun exposure or uniform dirt film ≠ WATER_STAIN (use background)."
+    - "Camera artifacts (shadows, reflections) ≠ WATER_STAIN."
+    - "Efflorescence that grows as a crust is DAMAGE, but faint whitish streaks with no thickness → WATER_STAIN."
 
   ORNAMENT_INTACT:
     - "Decorative piece is present and looks fine."
-    - "Other issues nearby don’t mean this is damaged."
+    - "Other issues nearby don’t mean this is damaged. Very often water marks are on decorations — it is still intact."
+    - "Includes moldings, cornices, capitals, reliefs, pilasters, medallions, plaques, stucco motifs that are complete."
+    - "Edges are crisp, profiles continuous, symmetry preserved; minor dust/soot/water streaks are acceptable."
+    - "Hairline joints at piece boundaries can be visible and still intact."
+    - "If an ornament has chips, cracks, missing fragments, or unstable bulges → that area is DAMAGE."
+    - "Paint color variations from lighting or patina do NOT break intact status."
+    - "Signs or stickers attached ON TOP of ornaments → TEXT_OR_IMAGES, but the ornament beneath may still be intact."
 
   REPAIRS:
     - "Patches or repainting that don’t match the rest; sometimes temporary covers."
-    - "Not a full, even repaint."
+    - "Not a full, even repaint. May be green cloth or rectangular patch of different color."
+    - "Fresh mortar ‘cold joints’, infill bricks/tiles with different tone/size/texture."
+    - "Localized skim-coat/putty zones; sharp-edged rectangles or circles; trowel marks."
+    - "Sealant over-crack bands, epoxy injections, small plates, anchors, or stitched crack ties."
+    - "Paint ‘swatches’ or spot-primed areas that clearly differ from surrounding finish."
+    - "Temporary protection: mesh/netting, green cloth, taped plastic, or foil over a spot."
+    - "Do NOT label designed color-block façades or uniform recent repaint as REPAIRS (use background)."
+    - "If a repair patch is also failing (cracking/spalling), overlapping area → DAMAGE; the rest → REPAIRS."
 
   TEXT_OR_IMAGES:
     - "Added stuff like signs, numbers, graffiti, ads."
     - "Not the building’s own material pattern."
+    - "Includes posters, stickers, murals, printed banners, decals on glass, shop names, house numbers, street plates."
+    - "Logos on awnings/canopies and digital screens count as TEXT_OR_IMAGES."
+    - "Company/store branding painted onto the façade is TEXT_OR_IMAGES (even if large)."
+    - "Engraved or mounted letterforms intended to be read (metal, stone, plastic) → TEXT_OR_IMAGES."
+    - "Reflections of text in glass are NOT annotated (treat as background)."
+    - "Do NOT tag ornamental bas-reliefs that are purely decorative without readable text (use ORNAMENT_INTACT)."
+    - "If a sign panel is broken or peeling, the failing parts → DAMAGE; the intact readable panel area → TEXT_OR_IMAGES."
+
 
 training:
   dataset:

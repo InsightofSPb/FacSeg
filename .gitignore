@@ -16,3 +16,4 @@ tiles/*
 __pycache__/
 *.pyc
 outputs/
+dataset_final/*
