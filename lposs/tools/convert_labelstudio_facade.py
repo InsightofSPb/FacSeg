@@ -20,7 +20,7 @@ import re
 import os
 import random
 import shutil
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
@@ -29,35 +29,43 @@ from PIL import Image
 from pycocotools import mask as mask_utils
 
 # Keep in sync with ``FacadeDamageDataset``.
-CLASS_NAMES = (
-    "background",
-    "CRACK",
-    "SPALLING",
-    "DELAMINATION",
-    "MISSING_ELEMENT",
-    "WATER_STAIN",
-    "EFFLORESCENCE",
-    "CORROSION",
-    "ORNAMENT_INTACT",
-    "REPAIRS",
-    "TEXT_OR_IMAGES",
+CLASS_GROUPS = OrderedDict(
+    (
+        ("background", ("background",)),
+        (
+            "DAMAGE",
+            (
+                "CRACK",
+                "SPALLING",
+                "DELAMINATION",
+                "MISSING_ELEMENT",
+                "EFFLORESCENCE",
+                "CORROSION",
+            ),
+        ),
+        ("WATER_STAIN", ("WATER_STAIN",)),
+        ("ORNAMENT_INTACT", ("ORNAMENT_INTACT",)),
+        ("REPAIRS", ("REPAIRS",)),
+        ("TEXT_OR_IMAGES", ("TEXT_OR_IMAGES",)),
+    )
 )
+
+CLASS_NAMES = tuple(CLASS_GROUPS.keys())
 
 PALETTE = [
     [0, 0, 0],
     [229, 57, 53],
-    [30, 136, 229],
-    [67, 160, 71],
-    [251, 140, 0],
     [142, 36, 170],
-    [253, 216, 53],
-    [0, 172, 193],
     [158, 158, 158],
     [78, 158, 158],
     [142, 126, 71],
 ]
 
 CLASS_NAME_TO_INDEX = {name: idx for idx, name in enumerate(CLASS_NAMES)}
+for canonical, aliases in CLASS_GROUPS.items():
+    idx = CLASS_NAME_TO_INDEX[canonical]
+    for alias in aliases:
+        CLASS_NAME_TO_INDEX[alias] = idx
 
 
 def _flatten_palette(palette: Iterable[Iterable[int]]) -> list:
@@ -129,7 +137,7 @@ def _build_masks(
 
 def _ensure_categories(coco: MutableMapping) -> Dict[int, str]:
     categories = {cat["id"]: cat["name"] for cat in coco.get("categories", [])}
-    missing = sorted(set(categories.values()) - set(CLASS_NAMES))
+    missing = sorted(set(categories.values()) - set(CLASS_NAME_TO_INDEX))
     if missing:
         raise ValueError(f"Categories {missing} are not part of the predefined facade classes.")
     return categories

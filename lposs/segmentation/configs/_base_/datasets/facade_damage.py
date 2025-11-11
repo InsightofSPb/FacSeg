@@ -7,13 +7,8 @@ data_root = "./data/facade_damage"
 
 classes = (
     "background",
-    "CRACK",
-    "SPALLING",
-    "DELAMINATION",
-    "MISSING_ELEMENT",
+    "DAMAGE",
     "WATER_STAIN",
-    "EFFLORESCENCE",
-    "CORROSION",
     "ORNAMENT_INTACT",
     "REPAIRS",
     "TEXT_OR_IMAGES",
@@ -22,12 +17,7 @@ classes = (
 palette = [
     [0, 0, 0],
     [229, 57, 53],
-    [30, 136, 229],
-    [67, 160, 71],
-    [251, 140, 0],
     [142, 36, 170],
-    [253, 216, 53],
-    [0, 172, 193],
     [158, 158, 158],
     [78, 158, 158],
     [142, 126, 71],

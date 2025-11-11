@@ -111,7 +111,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config-name",
         type=str,
-        default="facade_baseline.yaml",
+        default="facade_grouped.yaml",
         help="Hydra configuration name located in lposs/configs.",
     )
     parser.add_argument(

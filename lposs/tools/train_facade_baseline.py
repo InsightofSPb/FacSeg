@@ -19,6 +19,12 @@ from mmcv.runner import set_random_seed
 from mmseg.datasets import build_dataloader, build_dataset
 from torch.cuda.amp import GradScaler, autocast
 from tqdm.auto import tqdm
+
+from lposs.helpers import state_dict_from_module, unwrap_module
+from lposs.helpers.logger import get_logger
+from lposs.metrics.facade_metrics import FacadeMetricLogger
+from lposs.models import build_model
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PROJECT_ROOT.parent
 CONFIG_DIR = PROJECT_ROOT / "configs"
@@ -28,9 +34,65 @@ for path in (REPO_ROOT, PROJECT_ROOT):
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
 
-from lposs.helpers.logger import get_logger
-from lposs.metrics.facade_metrics import FacadeMetricLogger
-from lposs.models import build_model
+
+def _cfg_get(config, key: str, default=None):
+    """Safely retrieve ``key`` from possibly nested config objects."""
+
+    if config is None:
+        return default
+    if isinstance(config, dict):
+        return config.get(key, default)
+    if hasattr(config, "get"):
+        try:
+            return config.get(key, default)
+        except Exception:  # pragma: no cover - depends on config type
+            pass
+    if hasattr(config, key):
+        return getattr(config, key)
+    return default
+
+
+def _maybe_compile_model(model, compile_cfg, logger):
+    """Compile *model* with ``torch.compile`` when requested and available."""
+
+    enabled = _cfg_get(compile_cfg, "enabled", False)
+    if isinstance(enabled, str):
+        enabled = enabled.lower() in {"1", "true", "yes", "on"}
+    else:
+        enabled = bool(enabled)
+
+    if not enabled:
+        return model, False
+
+    if not hasattr(torch, "compile"):
+        logger.warning(
+            "torch.compile requested but this PyTorch build does not provide it; running in eager mode."
+        )
+        return model, False
+
+    compile_kwargs = {}
+    backend = _cfg_get(compile_cfg, "backend")
+    if backend:
+        compile_kwargs["backend"] = backend
+    mode = _cfg_get(compile_cfg, "mode") or "reduce-overhead"
+    compile_kwargs["mode"] = mode
+    fullgraph = _cfg_get(compile_cfg, "fullgraph")
+    if fullgraph is not None:
+        compile_kwargs["fullgraph"] = bool(fullgraph)
+    dynamic = _cfg_get(compile_cfg, "dynamic")
+    if dynamic is not None:
+        compile_kwargs["dynamic"] = bool(dynamic)
+
+    try:
+        compiled = torch.compile(model, **compile_kwargs)  # type: ignore[attr-defined]
+    except Exception as exc:  # pragma: no cover - depends on environment
+        logger.warning(
+            "torch.compile failed (%s); continuing with eager execution.", exc
+        )
+        return model, False
+
+    logger.info("torch.compile enabled with options: %s", compile_kwargs)
+    return compiled, True
 
 def _import_module_from_path(qualified_name: str, path: Path) -> None:
     """Import a module from a specific file path under the given name."""
@@ -222,14 +284,20 @@ def save_checkpoint(
     epoch: int,
     path: Path,
     *,
+    scheduler=None,
     metadata: Optional[Dict[str, Union[str, float, int]]] = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "epoch": epoch,
-        "model_state": model.state_dict(),
+        "model_state": state_dict_from_module(model),
         "optim_state": optimiser.state_dict(),
     }
+    if scheduler is not None:
+        try:
+            payload["scheduler_state"] = scheduler.state_dict()
+        except AttributeError:  # pragma: no cover - scheduler may not follow API
+            pass
     if metadata:
         payload["metadata"] = metadata
     torch.save(payload, path)
@@ -268,6 +336,7 @@ class BestCheckpointManager:
         epoch: int,
         model,
         optimiser,
+        scheduler=None,
     ) -> bool:
         key = (split, metric)
         if key not in self._criteria:
@@ -287,6 +356,7 @@ class BestCheckpointManager:
             optimiser,
             epoch,
             path,
+            scheduler=scheduler,
             metadata={
                 "split": split,
                 "metric": metric,
@@ -381,9 +451,12 @@ def _run_lposs_sanity_check(
     if not class_names and hasattr(sanity_val_loader.dataset, "CLASSES"):
         class_names = list(sanity_val_loader.dataset.CLASSES)
 
+    compile_cfg = getattr(cfg, "compile", None)
+
     model = build_model(cfg.model, class_names=class_names)
     model.to(device)
-    optimiser, _ = model.configure_optimiser(total_epochs=1)
+    optimiser, sanity_scheduler = model.configure_optimiser(total_epochs=1)
+    model, _ = _maybe_compile_model(model, compile_cfg, logger)
     scaler = GradScaler(enabled=torch.cuda.is_available())
     train_metric_logger = FacadeMetricLogger(class_names)
     val_metric_logger = FacadeMetricLogger(class_names)
@@ -477,6 +550,7 @@ def _run_lposs_sanity_check(
         optimiser,
         epoch=0,
         path=ckpt_path,
+        scheduler=sanity_scheduler,
         metadata={
             "stage": "sanity_check",
             "train_samples": train_processed,
@@ -570,11 +644,14 @@ def train(cfg, *, sanity_check: bool = True, sanity_sample_limit: int = 20) -> N
     else:
         logger.info("Train dataset contains %d images in total.", total_train_images)
     class_names = list(train_loader.dataset.CLASSES)
+    compile_cfg = getattr(cfg, "compile", None)
+
     model = build_model(cfg.model, class_names=class_names)
     model.to(device)
 
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    base_model = unwrap_module(model)
+    total_params = sum(p.numel() for p in base_model.parameters())
+    trainable_params = sum(p.numel() for p in base_model.parameters() if p.requires_grad)
     logger.info(
         "Model parameters: total=%.2fM, trainable=%.2fM (%d / %d)",
         total_params / 1e6,
@@ -583,6 +660,7 @@ def train(cfg, *, sanity_check: bool = True, sanity_sample_limit: int = 20) -> N
         total_params,
     )
     optimiser, scheduler = model.configure_optimiser(total_epochs=cfg.training.max_epochs)
+    model, _ = _maybe_compile_model(model, compile_cfg, logger)
     scaler = GradScaler(enabled=torch.cuda.is_available())
     train_metric_logger = FacadeMetricLogger(class_names)
     val_metric_logger = FacadeMetricLogger(class_names)
@@ -650,6 +728,7 @@ def train(cfg, *, sanity_check: bool = True, sanity_sample_limit: int = 20) -> N
             epoch=epoch,
             model=model,
             optimiser=optimiser,
+            scheduler=scheduler,
         )
         train_miou = train_metrics.get("mIoU")
         if train_miou is not None:
@@ -660,6 +739,7 @@ def train(cfg, *, sanity_check: bool = True, sanity_sample_limit: int = 20) -> N
                 epoch=epoch,
                 model=model,
                 optimiser=optimiser,
+                scheduler=scheduler,
             )
 
         if epoch % cfg.training.val_interval == 0:
@@ -685,6 +765,7 @@ def train(cfg, *, sanity_check: bool = True, sanity_sample_limit: int = 20) -> N
                     epoch=epoch,
                     model=model,
                     optimiser=optimiser,
+                    scheduler=scheduler,
                 )
             val_miou = metrics.get("mIoU")
             if val_miou is not None:
@@ -695,6 +776,7 @@ def train(cfg, *, sanity_check: bool = True, sanity_sample_limit: int = 20) -> N
                     epoch=epoch,
                     model=model,
                     optimiser=optimiser,
+                    scheduler=scheduler,
                 )
 
         if confusion_dir:
@@ -716,6 +798,6 @@ if __name__ == '__main__':
         raise FileNotFoundError(f"Hydra config directory not found: {CONFIG_DIR}")
 
     with initialize_config_dir(config_dir=str(CONFIG_DIR), version_base=None):
-        cfg = compose(config_name="facade_baseline.yaml")
+        cfg = compose(config_name="facade_grouped.yaml")
 
     train(cfg)

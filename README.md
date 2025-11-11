@@ -287,12 +287,15 @@ matches the model’s `1024×1024` training scale【F:lposs/segmentation/configs
 
 4. **Launch training** once the tiled outputs are copied/merged into
    `data/facade_damage/images/{train,val}` and `masks/{train,val}` (see previous
-   section). The baseline configuration reads the prepared dataset directly:
+   section). From the project root (`FacSeg/`) run the grouped configuration,
+   which collapses the damage subclasses into a single `DAMAGE` label by
+   default:
 
    ```bash
-   python main.py --mode lposs_train --config lposs/configs/facade_baseline.yaml \
+   cd /path/to/FacSeg
+   python main.py --mode lposs_train --config lposs/configs/facade_grouped.yaml \
      training.dataset.data_root=/home/sasha/Facade_segmentation/dataset_final \
-     --out_dir results/facade_baseline_run1
+     --out_dir results/facade_grouped_run1
    ```
 
    The `--mode lposs_train` flag switches the CLI to the LPOSS/Hydra training

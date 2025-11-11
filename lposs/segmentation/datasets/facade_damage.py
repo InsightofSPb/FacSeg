@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import os
-from typing import Iterable, Optional, Sequence, Tuple
+from collections import OrderedDict
+from typing import Iterable, Mapping, Optional, Sequence, Tuple
+
 from mmseg.datasets import DATASETS, CustomDataset
 
 
@@ -10,7 +12,7 @@ from mmseg.datasets import DATASETS, CustomDataset
 class FacadeDamageDataset(CustomDataset):
     """Facade damage dataset tailored for the facade baseline pipeline."""
 
-    CLASSES = (
+    ORIGINAL_CLASSES = (
         "background",
         "CRACK",
         "SPALLING",
@@ -24,8 +26,7 @@ class FacadeDamageDataset(CustomDataset):
         "TEXT_OR_IMAGES",
     )
 
-    # Default palette roughly matches the Label Studio colours shared by the user.
-    PALETTE = [
+    ORIGINAL_PALETTE = [
         [0, 0, 0],
         [229, 57, 53],
         [30, 136, 229],
@@ -39,10 +40,45 @@ class FacadeDamageDataset(CustomDataset):
         [142, 126, 71],
     ]
 
+    CLASS_MERGE_GROUPS = OrderedDict(
+        (
+            ("background", ("background",)),
+            (
+                "DAMAGE",
+                (
+                    "CRACK",
+                    "SPALLING",
+                    "DELAMINATION",
+                    "MISSING_ELEMENT",
+                    "EFFLORESCENCE",
+                    "CORROSION",
+                ),
+            ),
+            ("WATER_STAIN", ("WATER_STAIN",)),
+            ("ORNAMENT_INTACT", ("ORNAMENT_INTACT",)),
+            ("REPAIRS", ("REPAIRS",)),
+            ("TEXT_OR_IMAGES", ("TEXT_OR_IMAGES",)),
+        )
+    )
+
+    CLASSES = tuple(CLASS_MERGE_GROUPS.keys())
+
+    # Default palette roughly matches the Label Studio colours shared by the user.
+    PALETTE = [
+        ORIGINAL_PALETTE[0],  # background
+        ORIGINAL_PALETTE[1],  # damage (re-using crack colour)
+        ORIGINAL_PALETTE[5],  # water stain
+        ORIGINAL_PALETTE[8],  # ornament intact
+        ORIGINAL_PALETTE[9],  # repairs
+        ORIGINAL_PALETTE[10],  # text or images
+    ]
+
     def __init__(self, **kwargs):
         img_suffix = kwargs.pop('img_suffix', ('.png', '.jpg', '.jpeg'))
         seg_map_suffix = kwargs.pop('seg_map_suffix', ('.png', '.jpg', '.jpeg'))
         recursive = kwargs.pop('recursive', True)
+
+        self._raw_label_map = self._build_raw_label_map()
 
         # ``CustomDataset`` initialiser calls ``load_annotations`` immediately, so make
         # sure ``self.recursive`` is defined before invoking ``super().__init__``.
@@ -60,6 +96,20 @@ class FacadeDamageDataset(CustomDataset):
         palette = kwargs.get('palette')
         if palette is not None:
             self.PALETTE = [list(color) for color in palette]
+
+    @classmethod
+    def _build_raw_label_map(cls) -> Mapping[int, int]:
+        index_lookup = {name: idx for idx, name in enumerate(cls.ORIGINAL_CLASSES)}
+        mapping: dict[int, int] = {}
+        for new_idx, source_names in enumerate(cls.CLASS_MERGE_GROUPS.values()):
+            for source in source_names:
+                mapping[index_lookup[source]] = new_idx
+        return mapping
+
+    def pre_pipeline(self, results):
+        super().pre_pipeline(results)
+        if self._raw_label_map:
+            results['label_map'] = dict(self._raw_label_map)
     @staticmethod
     def _normalize_suffixes(
         suffixes: Optional[Sequence[str]],
