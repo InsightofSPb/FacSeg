@@ -1,0 +1,61 @@
+_base_: "facade_baseline.yaml"
+defaults:
+  - _self_
+
+model_name: FacadeLPOSS-grouped
+output: "./outputs/facade_grouped"
+tag: facade_grouped
+
+compile:
+  enabled: true
+  mode: reduce-overhead
+  backend: null
+  fullgraph: false
+  dynamic: false
+
+prompt_descriptions:
+  _delete_: true
+  background:
+    - "Plain surface with nothing special going on."
+    - "Even look and color; normal joints or seams are fine."
+    - "Ignore random stuff like shadows or passing objects."
+
+  DAMAGE:
+    - "Any structural deterioration like cracks, flaking, missing chunks, corrosion, or efflorescence."
+    - "Ignore neat joints or intact decorations; this is about material that is broken or crumbling."
+
+  WATER_STAIN:
+    - "Streaky marks from water running down, often under ledges or pipes."
+    - "Not the puffy-looking patches; those belong in DAMAGE."
+
+  ORNAMENT_INTACT:
+    - "Decorative piece is present and looks fine."
+    - "Other issues nearby don’t mean this is damaged."
+
+  REPAIRS:
+    - "Patches or repainting that don’t match the rest; sometimes temporary covers."
+    - "Not a full, even repaint."
+
+  TEXT_OR_IMAGES:
+    - "Added stuff like signs, numbers, graffiti, ads."
+    - "Not the building’s own material pattern."
+
+training:
+  dataset:
+    classes:
+      - background
+      - DAMAGE
+      - WATER_STAIN
+      - ORNAMENT_INTACT
+      - REPAIRS
+      - TEXT_OR_IMAGES
+
+evaluate:
+  facade_damage:
+    classes:
+      - background
+      - DAMAGE
+      - WATER_STAIN
+      - ORNAMENT_INTACT
+      - REPAIRS
+      - TEXT_OR_IMAGES

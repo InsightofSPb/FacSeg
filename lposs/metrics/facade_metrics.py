@@ -15,6 +15,7 @@ class FacadeMetricLogger:
     """Aggregate IoU and boundary IoU over a validation epoch."""
 
     DAMAGE_CLASSES = {
+        "DAMAGE",
         "CRACK",
         "SPALLING",
         "DELAMINATION",
@@ -22,16 +23,11 @@ class FacadeMetricLogger:
         "EFFLORESCENCE",
         "CORROSION",
     }
-    DAMAGE_PLUS_EXTRA = {"WATER_STAIN"}
+    DAMAGE_PLUS_EXTRA = DAMAGE_CLASSES | {"WATER_STAIN"}
     DEFAULT_CLASS_ORDER = (
         "background",
-        "CRACK",
-        "SPALLING",
-        "DELAMINATION",
-        "MISSING_ELEMENT",
+        "DAMAGE",
         "WATER_STAIN",
-        "EFFLORESCENCE",
-        "CORROSION",
         "ORNAMENT_INTACT",
         "REPAIRS",
         "TEXT_OR_IMAGES",

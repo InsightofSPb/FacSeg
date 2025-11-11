@@ -248,7 +248,7 @@ def lposs_train(args):
         raise FileNotFoundError(f"Hydra config directory not found: {config_dir}")
 
     if not config_name:
-        config_name = "facade_baseline.yaml"
+        config_name = "facade_grouped.yaml"
 
     config_path = config_dir / config_name
     if not config_path.exists():

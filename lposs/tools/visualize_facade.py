@@ -65,7 +65,7 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Visualise facade predictions")
-    parser.add_argument('--config', default='facade_baseline.yaml')
+    parser.add_argument('--config', default='facade_grouped.yaml')
     parser.add_argument('--output', default='./outputs/visualisations')
     parser.add_argument('--num-samples', type=int, default=5)
     args = parser.parse_args()

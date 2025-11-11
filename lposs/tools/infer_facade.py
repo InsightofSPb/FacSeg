@@ -25,6 +25,7 @@ for path in (REPO_ROOT, PROJECT_ROOT):
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
 
+from lposs.helpers import load_model_state
 from lposs.helpers.logger import get_logger
 from lposs.metrics.facade_metrics import FacadeMetricLogger
 from lposs.models import build_model
@@ -47,7 +48,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config-name",
         type=str,
-        default="facade_baseline.yaml",
+        default="facade_grouped.yaml",
         help="Hydra configuration name located in lposs/configs.",
     )
     parser.add_argument(
@@ -164,7 +165,7 @@ def _render_visualisation(
 def _load_checkpoint(model: torch.nn.Module, checkpoint_path: Path, device: torch.device):
     state = torch.load(checkpoint_path, map_location=device)
     state_dict = state.get("model_state", state)
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    missing, unexpected = load_model_state(model, state_dict, strict=False)
     return state.get("epoch"), missing, unexpected
 
 
