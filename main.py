@@ -246,6 +246,8 @@ def lposs_train(args):
             explicit_seed_override = norm_value
 
     def _has_override(overrides_list, key: str) -> bool:
+        if key == "training.dataset.data_root" and explicit_data_root_override is not None:
+            return True
         for entry in overrides_list:
             text = str(entry)
             if "=" not in text:
@@ -350,6 +352,13 @@ def lposs_train(args):
             dataset_summary.append(f"    {split_name} per-source:")
             for source, count in sorted(counter.items()):
                 dataset_summary.append(f"      - {source}: {count}")
+    
+    if explicit_data_root_override is not None:
+        os.environ["FACADE_DATA_ROOT"] = explicit_data_root_override
+        dataset_summary.append(
+            "[i] dataset root override (training.dataset.data_root): "
+            f"{explicit_data_root_override}"
+        )
 
     if explicit_data_root_override is not None:
         os.environ["FACADE_DATA_ROOT"] = explicit_data_root_override
