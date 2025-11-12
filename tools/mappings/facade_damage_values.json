@@ -1,0 +1,13 @@
+{
+    "0": "background",
+    "1": "CRACK",
+    "2": "SPALLING",
+    "3": "DELAMINATION",
+    "4": "MISSING_ELEMENT",
+    "5": "WATER_STAIN",
+    "6": "EFFLORESCENCE",
+    "7": "CORROSION",
+    "8": "ORNAMENT_INTACT",
+    "9": "REPAIRS",
+    "10": "TEXT_OR_IMAGES"
+  }

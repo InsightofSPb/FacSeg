@@ -256,9 +256,53 @@ def load_class_mapping(path: Path) -> Dict[str, str]:
             continue
         mapping[_norm_name(raw_name)] = target_name
     if not mapping:
-        raise ValueError("Class mapping is empty after filtering; provide at least one target class.")
+        raise ValueError(
+            f"Class mapping from '{path}' is empty after filtering; provide at least one target class."
+        )
     return mapping
 
+
+def infer_identity_class_mapping(
+    annotation_paths: Sequence[Path], dataset_type: str
+) -> Dict[str, str]:
+    classes: Set[str] = set()
+    if dataset_type == "json-polygons":
+        for ann_path in annotation_paths:
+            try:
+                data = json.loads(ann_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Failed to parse JSON annotation: {ann_path}") from exc
+            objects = data.get("objects", []) or []
+            for obj in objects:
+                if not isinstance(obj, Mapping):
+                    continue
+                class_title = obj.get("classTitle")
+                if not class_title:
+                    continue
+                classes.add(str(class_title).strip())
+    elif dataset_type == "xml-bboxes":
+        import xml.etree.ElementTree as ET
+
+        for ann_path in annotation_paths:
+            try:
+                tree = ET.parse(ann_path)
+            except ET.ParseError as exc:
+                raise ValueError(f"Failed to parse XML annotation: {ann_path}") from exc
+            root = tree.getroot()
+            for obj in root.findall("object"):
+                name_tag = obj.find("name")
+                if name_tag is None or not name_tag.text:
+                    continue
+                classes.add(name_tag.text.strip())
+    else:
+        raise ValueError(f"Unsupported dataset type for identity mapping: {dataset_type}")
+
+    classes = {cls for cls in classes if cls}
+    if not classes:
+        raise ValueError(
+            "Could not infer any classes from annotations; specify --class-mapping to continue."
+        )
+    return {_norm_name(name): name for name in sorted(classes)}
 
 def load_mask_value_mapping(path: Path) -> Tuple[Dict[int, str], Set[int]]:
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -630,8 +674,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if dataset_type in {"json-polygons", "xml-bboxes"}:
         if not args.annotations_dir:
             raise ValueError("--annotations-dir is required for json-polygons and xml-bboxes datasets.")
-        if not args.class_mapping:
-            raise ValueError("--class-mapping is required for json-polygons and xml-bboxes datasets.")
         annotations_dir = args.annotations_dir
         if not annotations_dir.exists():
             raise FileNotFoundError(f"Annotations directory '{annotations_dir}' does not exist")
@@ -651,7 +693,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             raise FileNotFoundError(
                 f"No annotation files with extensions {annotation_exts} found under {annotations_dir}"
             )
-        class_mapping = load_class_mapping(args.class_mapping)
+        if args.class_mapping:
+            class_mapping = load_class_mapping(args.class_mapping)
+        else:
+            class_mapping = infer_identity_class_mapping(ann_paths, dataset_type)
     else:  # mask-png
         if not args.masks_dir:
             raise ValueError("--masks-dir is required for mask-png datasets.")
@@ -722,6 +767,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"  pad:          {tile_spec.pad}")
     print(f"  min_coverage: {args.min_coverage}")
     print(f"  keep_empty:   {bool(args.keep_empty)}")
+    if dataset_type != "mask-png":
+        if args.class_mapping:
+            print(f"  class_mapping: {args.class_mapping}")
+        else:
+            print("  class_mapping: (identity mapping inferred from annotations)")
     if augmentations:
         print(
             "  augmentations: "

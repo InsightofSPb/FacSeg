@@ -16,3 +16,4 @@ tiles/*
 __pycache__/
 *.pyc
 outputs/
+!/tools/mappings/*.json
