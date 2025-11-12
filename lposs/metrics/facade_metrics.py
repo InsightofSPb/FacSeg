@@ -255,10 +255,27 @@ class FacadeMetricLogger:
             self._device = resolved_device
 
     def compute(self) -> Dict[str, float]:
-        unions = self.union.clamp(min=1)
-        ious = self.intersection / unions
-        miou = ious.mean().item()
-        boundary = (self.boundary_inter / self.boundary_union.clamp(min=1)).mean().item()
+        unions = self.union
+        valid = unions > 0
+        ious = torch.empty_like(unions)
+        ious.fill_(float("nan"))
+        if valid.any():
+            ious[valid] = self.intersection[valid] / unions[valid]
+            miou = ious[valid].mean().item()
+        else:
+            miou = float("nan")
+
+        boundary_unions = self.boundary_union
+        boundary_valid = boundary_unions > 0
+        boundary_ious = torch.empty_like(boundary_unions)
+        boundary_ious.fill_(float("nan"))
+        if boundary_valid.any():
+            boundary_ious[boundary_valid] = (
+                self.boundary_inter[boundary_valid] / boundary_unions[boundary_valid]
+            )
+            boundary = boundary_ious[boundary_valid].mean().item()
+        else:
+            boundary = float("nan")
         precision = torch.where(
             self.pred_area > 0,
             self.intersection / self.pred_area.clamp(min=1),
@@ -292,9 +309,13 @@ class FacadeMetricLogger:
             "damageMislabelRate": 0.0,
         }
         if self.damage_indices:
-            damage_values = ious[list(self.damage_indices)]
-            if damage_values.numel() > 0:
-                metrics["damageMIoU"] = damage_values.mean().item()
+            damage_values = [
+                ious[idx]
+                for idx in self.damage_indices
+                if 0 <= idx < ious.numel() and valid[idx]
+            ]
+            if damage_values:
+                metrics["damageMIoU"] = torch.stack(damage_values).mean().item()
             if self.damage_gt_total:
                 metrics["damageDetectionRecall"] = self.damage_hits / max(
                     self.damage_gt_total, 1.0
@@ -312,9 +333,13 @@ class FacadeMetricLogger:
             if denom > 0:
                 metrics["damageDetectionF1"] = (2 * precision * recall) / denom
         if self.damage_plus_indices:
-            damage_plus_values = ious[list(self.damage_plus_indices)]
-            if damage_plus_values.numel() > 0:
-                metrics["damagePlusMIoU"] = damage_plus_values.mean().item()
+            damage_plus_values = [
+                ious[idx]
+                for idx in self.damage_plus_indices
+                if 0 <= idx < ious.numel() and valid[idx]
+            ]
+            if damage_plus_values:
+                metrics["damagePlusMIoU"] = torch.stack(damage_plus_values).mean().item()
         if self.damage_indices and self.damage_union:
             metrics["damageIoU"] = self.damage_intersection / max(self.damage_union, 1.0)
         if self.damage_plus_indices and self.damage_plus_union:
@@ -324,13 +349,18 @@ class FacadeMetricLogger:
         return metrics
 
     def per_class_iou(self) -> Dict[str, float]:
-        unions = self.union.clamp(min=1)
-        ious = (self.intersection / unions).tolist()
+        unions = self.union
+        valid = unions > 0
+        ious = torch.empty_like(unions)
+        ious.fill_(float("nan"))
+        if valid.any():
+            ious[valid] = self.intersection[valid] / unions[valid]
+        iou_list = ious.tolist()
         if self.display_class_names is not None:
             keys = self.display_class_names
         else:
             keys = [str(idx) for idx in range(self.num_classes)]
-        return {key: float(value) for key, value in zip(keys, ious)}
+        return {key: float(value) for key, value in zip(keys, iou_list)}
 
     def confusion_matrix(self) -> torch.Tensor:
         """Return a CPU copy of the accumulated confusion matrix."""
